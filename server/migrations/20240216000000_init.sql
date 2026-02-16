@@ -22,7 +22,8 @@ CREATE TABLE user_configs (
     max_bitrate INT,
     max_fps INT,
     resolution VARCHAR(50),
-    audio_channel VARCHAR(255),
+    desktop_audio VARCHAR(255),
+    mic_audio VARCHAR(255),
     rtmp_url VARCHAR(255),
     rtmp_key VARCHAR(255)
 );
