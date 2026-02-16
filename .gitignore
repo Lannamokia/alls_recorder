@@ -1,0 +1,9 @@
+/cli-capture/dist/
+/web-ui/node_modules/
+/web-ui/dist/
+/server/target/
+/server/init.lock
+/server/.env
+/server/.env.*
+/rec/
+.DS_Store
