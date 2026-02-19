@@ -20,8 +20,12 @@ if %errorlevel% neq 0 (
   git apply "%ROOT%\patches\0001-obs-build-flags.patch"
 )
 
-set "VS_PATH=C:\Program Files\Microsoft Visual Studio\18\Community"
-set "CMAKE_PATH=C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+  for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%i"
+)
+if not defined VS_PATH set "VS_PATH=C:\Program Files\Microsoft Visual Studio\18\Community"
+set "CMAKE_PATH=%VS_PATH%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
 
 if exist "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat" (
   call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
