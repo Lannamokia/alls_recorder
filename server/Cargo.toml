@@ -19,3 +19,6 @@ jsonwebtoken = "9.2"
 bcrypt = "0.15"
 anyhow = "1.0"
 sysinfo = "0.30"
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"

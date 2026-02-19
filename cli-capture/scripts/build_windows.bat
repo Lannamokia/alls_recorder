@@ -60,3 +60,5 @@ mkdir "..\..\dist"
 xcopy /E /I /Y "rundir\RelWithDebInfo\*" "..\..\dist\" >nul
 
 popd
+
+if exist "%OBS_DIR%\" rmdir /s /q "%OBS_DIR%"

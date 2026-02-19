@@ -10,7 +10,8 @@ export default function InitPage() {
     port: 5432, 
     user: 'postgres', 
     password: '', 
-    dbname: 'alls_recorder' 
+    dbname: 'alls_recorder',
+    jwt_secret: ''
   });
   const [adminConfig, setAdminConfig] = useState({ 
     username: 'admin', 
@@ -26,6 +27,13 @@ export default function InitPage() {
       navigate('/discover');
     }
   }, [backendUrl, navigate]);
+
+  const generateSecret = () => {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const base64 = btoa(String.fromCharCode(...bytes));
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  };
 
   const handleDbSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,6 +106,13 @@ export default function InitPage() {
             <div>
               <label className="block text-sm font-medium mb-1">数据库名称</label>
               <input type="text" value={dbConfig.dbname} onChange={e => setDbConfig({...dbConfig, dbname: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">JWT_SECRET</label>
+              <div className="flex gap-2">
+                <input type="text" value={dbConfig.jwt_secret} onChange={e => setDbConfig({...dbConfig, jwt_secret: e.target.value})} className="flex-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
+                <button type="button" onClick={() => setDbConfig({...dbConfig, jwt_secret: generateSecret()})} className="px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100">随机生成</button>
+              </div>
             </div>
             <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">下一步</button>
           </form>

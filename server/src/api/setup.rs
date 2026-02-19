@@ -31,6 +31,7 @@ pub struct DbConfig {
     pub user: String,
     pub password: String,
     pub dbname: String,
+    pub jwt_secret: String,
 }
 
 #[derive(Deserialize)]
@@ -86,20 +87,57 @@ async fn setup_db(
     if Path::new("init.lock").exists() {
         return (StatusCode::BAD_REQUEST, "Already initialized").into_response();
     }
+    if config.jwt_secret.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "JWT_SECRET is required").into_response();
+    }
 
     let url = format!(
         "postgres://{}:{}@{}:{}/{}",
         config.user, config.password, config.host, config.port, config.dbname
     );
 
-    // Test connection
+    std::env::set_var("PGCLIENTENCODING", "UTF8");
+
+    let admin_url = format!(
+        "postgres://{}:{}@{}:{}/postgres",
+        config.user, config.password, config.host, config.port
+    );
+    let admin_pool = match PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&admin_url)
+        .await
+    {
+        Ok(p) => p,
+        Err(e2) => {
+            let msg = e2.to_string();
+            if msg.contains("non-UTF-8") || msg.contains("lc_messages") {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to connect: authentication failed or database messages are not UTF-8 compatible. Please verify credentials or set lc_messages to C/UTF-8.".to_string()).into_response();
+            }
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to connect admin database: {}", msg)).into_response();
+        }
+    };
+    let dbname = config.dbname.replace('"', "\"\"");
+    let create_sql = format!("CREATE DATABASE \"{}\"", dbname);
+    if let Err(create_err) = sqlx::query(&create_sql).execute(&admin_pool).await {
+        let create_msg = create_err.to_string();
+        if !create_msg.contains("already exists") {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create database: {}", create_msg)).into_response();
+        }
+    }
+
     let pool = match PgPoolOptions::new()
         .max_connections(5)
         .connect(&url)
         .await
     {
         Ok(pool) => pool,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to connect: {}", e)).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("non-UTF-8") || msg.contains("lc_messages") {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to connect: authentication failed or database messages are not UTF-8 compatible. Please verify credentials or set lc_messages to C/UTF-8.".to_string()).into_response();
+            }
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to connect: {}", msg)).into_response();
+        }
     };
 
     // Run migrations
@@ -115,13 +153,15 @@ async fn setup_db(
 
     // Save DB config to .env temporarily (or permanently)
     let env_content = format!(
-        "DATABASE_URL={}\nRUST_LOG=server=debug,tower_http=debug\nJWT_SECRET=please_change_this_secret\n",
-        url
+        "DATABASE_URL={}\nRUST_LOG=server=debug,tower_http=debug\nJWT_SECRET={}\n",
+        url,
+        config.jwt_secret.trim()
     );
     
     if let Err(e) = std::fs::write(".env", env_content) {
          return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write .env: {}", e)).into_response();
     }
+    std::env::set_var("JWT_SECRET", config.jwt_secret.trim());
 
     (StatusCode::OK, "Database connected and migrated").into_response()
 }

@@ -49,11 +49,6 @@ struct FileOwnership {
     filename: String,
 }
 
-#[derive(FromRow)]
-struct FileUser {
-    user_id: Option<Uuid>,
-}
-
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_files))
@@ -398,8 +393,8 @@ async fn rename_file(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let file: Option<FileUser> = sqlx::query_as(
-        "SELECT user_id FROM recordings WHERE id = $1"
+    let file: Option<FileOwnership> = sqlx::query_as(
+        "SELECT user_id, filepath, filename FROM recordings WHERE id = $1"
     )
     .bind(id)
     .fetch_optional(pool)
@@ -415,11 +410,44 @@ async fn rename_file(
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
 
+    let new_name = payload.new_filename.trim();
+    if new_name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Invalid filename").into_response();
+    }
+    if std::path::Path::new(new_name).components().count() != 1 {
+        return (StatusCode::BAD_REQUEST, "Invalid filename").into_response();
+    }
+
+    let base = match get_recording_base(pool).await {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+
+    let old_path = match resolve_download_path(&base, &file.filename).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let new_path = base.join(new_name);
+    if let Ok(_) = tokio::fs::metadata(&new_path).await {
+        return (StatusCode::CONFLICT, "File already exists").into_response();
+    }
+
+    if let Err(e) = tokio::fs::rename(&old_path, &new_path).await {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return (StatusCode::NOT_FOUND, "File not found").into_response();
+        }
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("File Rename Error: {}", e)).into_response();
+    }
+
+    let new_filepath = format!("/recordings/{}", new_name);
+
     // Update DB
     if let Err(e) = sqlx::query(
-        "UPDATE recordings SET filename = $1 WHERE id = $2"
+        "UPDATE recordings SET filename = $1, filepath = $2 WHERE id = $3"
     )
-    .bind(&payload.new_filename)
+    .bind(new_name)
+    .bind(new_filepath)
     .bind(id)
     .execute(pool)
     .await {

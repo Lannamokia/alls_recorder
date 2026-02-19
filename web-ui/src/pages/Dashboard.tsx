@@ -19,7 +19,7 @@ export default function Dashboard() {
     axios.get(`${backendUrl}/api/setup/status`)
       .then(res => {
         if (!res.data.initialized) {
-          navigate('/init');
+          navigate('/discover');
         } else {
           // Check login
           const token = localStorage.getItem('token');

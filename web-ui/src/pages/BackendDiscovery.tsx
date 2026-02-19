@@ -106,6 +106,8 @@ export default function BackendDiscovery() {
     if (currentHost) bases.add(normalizeBaseUrl(currentHost));
     bases.add(normalizeBaseUrl('localhost'));
     bases.add(normalizeBaseUrl('127.0.0.1'));
+    const savedBackend = localStorage.getItem('backend_url');
+    if (savedBackend) bases.add(normalizeBaseUrl(savedBackend));
     candidatesRef.current.forEach(v => bases.add(normalizeBaseUrl(v)));
     const list = Array.from(bases).filter(Boolean);
     await Promise.all(list.map(b => probeBackend(b)));
@@ -223,7 +225,14 @@ export default function BackendDiscovery() {
               found.map(item => (
                 <div key={item.baseUrl} className="p-4 flex items-center justify-between">
                   <div>
-                    <div className="font-medium">{item.name}</div>
+                    <div className="font-medium flex items-center gap-2">
+                      <span>{item.name}</span>
+                      {!item.initialized && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200">
+                          未初始化
+                        </span>
+                      )}
+                    </div>
                     <div className="text-xs text-gray-500">{item.baseUrl}</div>
                     <div className="text-xs text-gray-500">{item.initialized ? '已初始化' : '未初始化'}</div>
                   </div>
@@ -231,7 +240,7 @@ export default function BackendDiscovery() {
                     onClick={() => handleSelect(item)}
                     className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded"
                   >
-                    选择
+                    {item.initialized ? '选择' : '去初始化'}
                   </button>
                 </div>
               ))
