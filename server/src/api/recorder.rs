@@ -145,7 +145,7 @@ async fn build_start_params(
     let sys_max_res = get_sys_val(pool, "max_res").await.and_then(|v| v.as_str().map(String::from)).unwrap_or("1920x1080".to_string());
     let sys_encoder = get_sys_val(pool, "video_encoder").await.and_then(|v| v.as_str().map(String::from)).unwrap_or("x264".to_string());
 
-    let user_config = sqlx::query_as::<_, crate::api::user_config::UserConfig>("SELECT max_bitrate, max_fps, resolution, desktop_audio, mic_audio, rtmp_url, rtmp_key FROM user_configs WHERE user_id = $1")
+    let user_config = sqlx::query_as::<_, crate::api::user_config::UserConfig>("SELECT max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key FROM user_configs WHERE user_id = $1")
         .bind(user_id)
         .fetch_optional(pool)
         .await
@@ -158,6 +158,7 @@ async fn build_start_params(
     let rtmp_key = user_config.as_ref().and_then(|c| c.rtmp_key.clone()).unwrap_or_default();
     let desktop_audio = user_config.as_ref().and_then(|c| c.desktop_audio.clone()).unwrap_or_default();
     let mic_audio = user_config.as_ref().and_then(|c| c.mic_audio.clone()).unwrap_or_default();
+    let monitor_id = user_config.as_ref().and_then(|c| c.monitor_id.clone()).unwrap_or_default();
 
     let mut args = Vec::new();
     args.push("--bitrate".to_string());
@@ -197,6 +198,10 @@ async fn build_start_params(
     if !mic_audio.is_empty() {
         args.push("--mic-audio".to_string());
         args.push(mic_audio);
+    }
+    if !monitor_id.is_empty() {
+        args.push("--monitor".to_string());
+        args.push(monitor_id);
     }
 
     let mut filename = None;

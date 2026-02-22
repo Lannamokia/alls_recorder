@@ -11,10 +11,23 @@ interface UserConfig {
   max_bitrate: number;
   max_fps: number;
   resolution: string;
+  monitor_id: string;
   desktop_audio: string;
   mic_audio: string;
   rtmp_url: string;
   rtmp_key: string;
+}
+
+interface HardwareDevice {
+  id: string;
+  name: string;
+}
+
+interface HardwareInfo {
+  screens: HardwareDevice[];
+  desktop_audio: HardwareDevice[];
+  microphone: HardwareDevice[];
+  encoders: HardwareDevice[];
 }
 
 export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModalProps) {
@@ -22,11 +35,13 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
     max_bitrate: 4000,
     max_fps: 30,
     resolution: '1920x1080',
+    monitor_id: '',
     desktop_audio: '',
     mic_audio: '',
     rtmp_url: '',
     rtmp_key: ''
   });
+  const [hardwareInfo, setHardwareInfo] = useState<HardwareInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -76,9 +91,10 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
     setLoading(true);
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-      const [userRes, recordRes] = await Promise.all([
+      const [userRes, recordRes, hardwareRes] = await Promise.all([
         axios.get(`${baseUrl}/api/user/config`, { headers }),
-        axios.get(`${baseUrl}/api/settings/record-config`, { headers }).catch(() => null)
+        axios.get(`${baseUrl}/api/settings/record-config`, { headers }).catch(() => null),
+        axios.get(`${baseUrl}/api/hardware/info`, { headers }).catch(() => null)
       ]);
       const maxResValue = recordRes?.data?.max_res || '1080p';
       const rank = rankFromValue(maxResValue);
@@ -93,11 +109,13 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
         max_bitrate: resData.max_bitrate || 4000,
         max_fps: resData.max_fps || 30,
         resolution: nextResolution,
+        monitor_id: resData.monitor_id || '',
         desktop_audio: resData.desktop_audio || '',
         mic_audio: resData.mic_audio || '',
         rtmp_url: resData.rtmp_url || '',
         rtmp_key: resData.rtmp_key || ''
       }));
+      setHardwareInfo(hardwareRes?.data || null);
     } catch (err) {
       console.error(err);
     } finally {
@@ -166,6 +184,24 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
                     </select>
                 </div>
 
+                <div>
+                    <label className="block text-sm font-medium mb-1">录制屏幕</label>
+                    <select
+                        value={config.monitor_id}
+                        onChange={e => setConfig({...config, monitor_id: e.target.value})}
+                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+                        disabled={!hardwareInfo?.screens?.length}
+                    >
+                        <option value="">默认/自动</option>
+                        {config.monitor_id && !hardwareInfo?.screens?.some(s => s.id === config.monitor_id) && (
+                            <option value={config.monitor_id}>{config.monitor_id}</option>
+                        )}
+                        {hardwareInfo?.screens?.map(s => (
+                            <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                    </select>
+                </div>
+
                 <div className="grid grid-cols-2 gap-4">
                     <div>
                         <label className="block text-sm font-medium mb-1">帧率 (FPS)</label>
@@ -188,25 +224,41 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
                 </div>
 
                 <div>
-                    <label className="block text-sm font-medium mb-1">桌面音频设备 ID (可选)</label>
-                    <input 
-                        type="text" 
+                    <label className="block text-sm font-medium mb-1">桌面音频设备</label>
+                    <select
                         value={config.desktop_audio}
                         onChange={e => setConfig({...config, desktop_audio: e.target.value})}
                         className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
-                        placeholder="例如: default 或设备GUID"
-                    />
+                        disabled={!hardwareInfo?.desktop_audio?.length}
+                    >
+                        <option value="">关闭</option>
+                        <option value="default">系统默认</option>
+                        {config.desktop_audio && !hardwareInfo?.desktop_audio?.some(d => d.id === config.desktop_audio) && (
+                            <option value={config.desktop_audio}>{config.desktop_audio}</option>
+                        )}
+                        {hardwareInfo?.desktop_audio?.map(d => (
+                            <option key={d.id} value={d.id}>{d.name}</option>
+                        ))}
+                    </select>
                 </div>
 
                 <div>
-                    <label className="block text-sm font-medium mb-1">麦克风设备 ID (可选)</label>
-                    <input 
-                        type="text" 
+                    <label className="block text-sm font-medium mb-1">麦克风设备</label>
+                    <select
                         value={config.mic_audio}
                         onChange={e => setConfig({...config, mic_audio: e.target.value})}
                         className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
-                        placeholder="例如: default 或设备GUID"
-                    />
+                        disabled={!hardwareInfo?.microphone?.length}
+                    >
+                        <option value="">关闭</option>
+                        <option value="default">系统默认</option>
+                        {config.mic_audio && !hardwareInfo?.microphone?.some(d => d.id === config.mic_audio) && (
+                            <option value={config.mic_audio}>{config.mic_audio}</option>
+                        )}
+                        {hardwareInfo?.microphone?.map(d => (
+                            <option key={d.id} value={d.id}>{d.name}</option>
+                        ))}
+                    </select>
                 </div>
 
                 <div className="border-t pt-4 mt-4">

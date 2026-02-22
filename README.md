@@ -60,6 +60,15 @@ npm run dev
    - 设置自己的分辨率/码率/FPS 等参数。
    - 查看在线用户并发起停止请求。
 
+## 数据库迁移说明
+
+- 新环境：使用 `server/migrations/20240216000000_init.sql` 初始化数据库即可。
+- 既有环境：若已存在旧库，需要补上 `user_configs.monitor_id` 列：
+
+```sql
+ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS monitor_id VARCHAR(50);
+```
+
 ## 编译指南
 
 ### 后端（Server）

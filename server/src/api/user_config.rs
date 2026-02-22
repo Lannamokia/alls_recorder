@@ -17,6 +17,7 @@ pub struct UserConfig {
     pub max_bitrate: Option<i32>,
     pub max_fps: Option<i32>,
     pub resolution: Option<String>,
+    pub monitor_id: Option<String>,
     pub desktop_audio: Option<String>,
     pub mic_audio: Option<String>,
     pub rtmp_url: Option<String>,
@@ -52,7 +53,7 @@ async fn get_config(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let config = sqlx::query_as::<_, UserConfig>("SELECT max_bitrate, max_fps, resolution, desktop_audio, mic_audio, rtmp_url, rtmp_key FROM user_configs WHERE user_id = $1")
+    let config = sqlx::query_as::<_, UserConfig>("SELECT max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key FROM user_configs WHERE user_id = $1")
         .bind(user_id)
         .fetch_optional(pool)
         .await
@@ -64,6 +65,7 @@ async fn get_config(
             max_bitrate: None,
             max_fps: None,
             resolution: None,
+            monitor_id: None,
             desktop_audio: None,
             mic_audio: None,
             rtmp_url: None,
@@ -97,13 +99,14 @@ async fn update_config(
 
     let result = sqlx::query(
         r#"
-        INSERT INTO user_configs (user_id, max_bitrate, max_fps, resolution, desktop_audio, mic_audio, rtmp_url, rtmp_key)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        INSERT INTO user_configs (user_id, max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         ON CONFLICT (user_id)
         DO UPDATE SET
             max_bitrate = EXCLUDED.max_bitrate,
             max_fps = EXCLUDED.max_fps,
             resolution = EXCLUDED.resolution,
+            monitor_id = EXCLUDED.monitor_id,
             desktop_audio = EXCLUDED.desktop_audio,
             mic_audio = EXCLUDED.mic_audio,
             rtmp_url = EXCLUDED.rtmp_url,
@@ -114,6 +117,7 @@ async fn update_config(
     .bind(payload.max_bitrate)
     .bind(payload.max_fps)
     .bind(payload.resolution)
+    .bind(payload.monitor_id)
     .bind(payload.desktop_audio)
     .bind(payload.mic_audio)
     .bind(payload.rtmp_url)

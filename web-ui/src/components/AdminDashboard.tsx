@@ -2,6 +2,18 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Trash2, RefreshCw, Key } from 'lucide-react';
 
+interface HardwareDevice {
+  id: string;
+  name: string;
+}
+
+interface HardwareInfo {
+  screens: HardwareDevice[];
+  desktop_audio: HardwareDevice[];
+  microphone: HardwareDevice[];
+  encoders: HardwareDevice[];
+}
+
 export default function AdminDashboard() {
   const [activeTab, setActiveTab] = useState<'users' | 'settings' | 'actions'>('actions');
   const [error, setError] = useState('');
@@ -47,7 +59,7 @@ export default function AdminDashboard() {
 
 function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
   const [scanning, setScanning] = useState(false);
-  const [scanResult, setScanResult] = useState<any>(null);
+  const [scanResult, setScanResult] = useState<HardwareInfo | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const [posting, setPosting] = useState(false);
   const [announcements, setAnnouncements] = useState<any[]>([]);
@@ -75,7 +87,7 @@ function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
       const res = await axios.post(`${baseUrl}/api/hardware/scan`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setScanResult(res.data);
+      setScanResult(res.data as HardwareInfo);
       setSuccess('硬件扫描完成');
     } catch (err: any) {
       console.error(err);
@@ -128,8 +140,42 @@ function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
           {scanning ? '扫描中...' : '运行硬件检测'}
         </button>
         {scanResult && (
-          <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-700 rounded overflow-auto max-h-48">
-            <pre className="text-xs">{JSON.stringify(scanResult, null, 2)}</pre>
+          <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-700 rounded overflow-auto max-h-48 text-sm space-y-2">
+            <div>
+              <div>已找到显示器设备（{scanResult.screens?.length || 0}个）：</div>
+              <div className="pl-4">
+                {(scanResult.screens || []).map((d, i) => (
+                  <div key={d.id}>{i + 1}. {d.name}</div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div>已找到桌面音频设备（{scanResult.desktop_audio?.length || 0}个）：</div>
+              <div className="pl-4">
+                {(scanResult.desktop_audio || []).map((d, i) => (
+                  <div key={d.id}>{i + 1}. {d.name}</div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div>已找到麦克风设备（{scanResult.microphone?.length || 0}个）：</div>
+              <div className="pl-4">
+                {(scanResult.microphone || []).map((d, i) => (
+                  <div key={d.id}>{i + 1}. {d.name}</div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div>已找到编码器（{scanResult.encoders?.length || 0}个）：</div>
+              <div className="pl-4">
+                {(scanResult.encoders || []).map((d, i) => (
+                  <div key={d.id}>{i + 1}. {d.id}</div>
+                ))}
+              </div>
+            </div>
+            <div className="text-xs text-gray-600 dark:text-gray-300">
+              硬件探测完成，已存入数据库，硬件发生变动时请酌情重新扫描并设置编码器相关参数
+            </div>
           </div>
         )}
       </div>
@@ -272,11 +318,13 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
         max_res: '1080p',
         video_encoder: 'x264'
     });
+    const [hardwareInfo, setHardwareInfo] = useState<HardwareInfo | null>(null);
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
 
     useEffect(() => {
         fetchSettings();
+        fetchHardwareInfo();
     }, []);
 
     const normalizeMaxRes = (value: string) => {
@@ -319,6 +367,17 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
             console.error(err);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const fetchHardwareInfo = async () => {
+        try {
+            const res = await axios.get(`${baseUrl}/api/hardware/info`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            setHardwareInfo(res.data);
+        } catch (err) {
+            setHardwareInfo(null);
         }
     };
 
@@ -412,12 +471,27 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
                     </div>
                     <div>
                         <label className="block text-sm font-medium mb-1">默认视频编码器</label>
-                        <input 
-                            type="text" 
-                            value={recordConfig.video_encoder}
-                            onChange={e => setRecordConfig({...recordConfig, video_encoder: e.target.value})}
-                            className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
-                        />
+                        {hardwareInfo?.encoders?.length ? (
+                            <select
+                                value={recordConfig.video_encoder}
+                                onChange={e => setRecordConfig({...recordConfig, video_encoder: e.target.value})}
+                                className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+                            >
+                                {!hardwareInfo.encoders.some(e => e.id === recordConfig.video_encoder) && (
+                                    <option value={recordConfig.video_encoder}>{recordConfig.video_encoder}</option>
+                                )}
+                                {hardwareInfo.encoders.map(e => (
+                                    <option key={e.id} value={e.id}>{e.id}</option>
+                                ))}
+                            </select>
+                        ) : (
+                            <input 
+                                type="text" 
+                                value={recordConfig.video_encoder}
+                                onChange={e => setRecordConfig({...recordConfig, video_encoder: e.target.value})}
+                                className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+                            />
+                        )}
                     </div>
                     <div>
                         <label className="block text-sm font-medium mb-1">默认最大帧率 (FPS)</label>
