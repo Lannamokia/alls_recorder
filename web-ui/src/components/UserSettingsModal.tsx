@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { X } from 'lucide-react';
+import BitrateHelper from './BitrateHelper';
 
 interface UserSettingsModalProps {
   isOpen: boolean;
@@ -204,7 +205,7 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
 
                 <div className="grid grid-cols-2 gap-4">
                     <div>
-                        <label className="block text-sm font-medium mb-1">帧率 (FPS)</label>
+                        <label className="block text-sm font-medium mb-1 h-6 flex items-center">帧率 (FPS)</label>
                         <input 
                             type="number" 
                             value={config.max_fps}
@@ -213,7 +214,10 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium mb-1">码率 (Kbps)</label>
+                        <label className="block text-sm font-medium mb-1 h-6 flex items-center">
+                            码率 (Kbps)
+                            <BitrateHelper />
+                        </label>
                         <input 
                             type="number" 
                             value={config.max_bitrate}
@@ -270,7 +274,7 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
                             value={config.rtmp_url}
                             onChange={e => setConfig({...config, rtmp_url: e.target.value})}
                             className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
-                            placeholder="rtmp://..."
+                            placeholder="rtmp://服务器地址/直播间"
                         />
                     </div>
                     <div>

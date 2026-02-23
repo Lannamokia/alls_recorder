@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Trash2, RefreshCw, Key } from 'lucide-react';
+import BitrateHelper from './BitrateHelper';
 
 interface HardwareDevice {
   id: string;
@@ -63,6 +64,8 @@ function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
   const [announcement, setAnnouncement] = useState('');
   const [posting, setPosting] = useState(false);
   const [announcements, setAnnouncements] = useState<any[]>([]);
+  const [installingService, setInstallingService] = useState(false);
+  const [uninstallingService, setUninstallingService] = useState(false);
 
   const fetchAnnouncements = async () => {
     try {
@@ -94,6 +97,100 @@ function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
       setError(err.response?.data || '扫描失败');
     } finally {
       setScanning(false);
+    }
+  };
+
+  const handleInstallService = async () => {
+    if (!confirm('确定要将后端安装为 Windows 系统服务吗？\n\n注意：此操作需要管理员权限。\n\n安装后，服务将自动启动，并在系统启动时自动运行。Agent 将配置为用户登录时自动启动。')) {
+      return;
+    }
+
+    setInstallingService(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const res = await axios.post(`${baseUrl}/api/service/install`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (res.data.success) {
+        setSuccess(res.data.message);
+      } else {
+        // 检查是否是权限问题
+        if (res.data.message.includes('Administrator privileges required')) {
+          setError(
+            '需要管理员权限。请按以下步骤操作：\n\n' +
+            '1. 以管理员身份打开命令提示符或 PowerShell\n' +
+            '2. 运行命令（会自动提升权限）：\n' +
+            res.data.message.split('\n').slice(1).join('\n')
+          );
+        } else {
+          setError(res.data.message);
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      const errorMsg = err.response?.data?.message || err.response?.data || '安装失败';
+      if (errorMsg.includes('Administrator privileges required')) {
+        setError(
+          '需要管理员权限。请按以下步骤操作：\n\n' +
+          '1. 以管理员身份打开命令提示符或 PowerShell\n' +
+          '2. 运行命令（会自动提升权限）：\n' +
+          errorMsg.split('\n').slice(1).join('\n')
+        );
+      } else {
+        setError(errorMsg);
+      }
+    } finally {
+      setInstallingService(false);
+    }
+  };
+
+  const handleUninstallService = async () => {
+    if (!confirm('确定要卸载 Windows 系统服务吗？\n\n注意：此操作需要管理员权限。\n\n卸载后，服务将被停止并删除，Agent 启动项和配置文件也将被清除。')) {
+      return;
+    }
+
+    setUninstallingService(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const res = await axios.post(`${baseUrl}/api/service/uninstall`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (res.data.success) {
+        setSuccess(res.data.message);
+      } else {
+        // 检查是否是权限问题
+        if (res.data.message.includes('Administrator privileges required')) {
+          setError(
+            '需要管理员权限。请按以下步骤操作：\n\n' +
+            '1. 以管理员身份打开命令提示符或 PowerShell\n' +
+            '2. 运行命令（会自动提升权限）：\n' +
+            res.data.message.split('\n').slice(1).join('\n')
+          );
+        } else {
+          setError(res.data.message);
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      const errorMsg = err.response?.data?.message || err.response?.data || '卸载失败';
+      if (errorMsg.includes('Administrator privileges required')) {
+        setError(
+          '需要管理员权限。请按以下步骤操作：\n\n' +
+          '1. 以管理员身份打开命令提示符或 PowerShell\n' +
+          '2. 运行命令（会自动提升权限）：\n' +
+          errorMsg.split('\n').slice(1).join('\n')
+        );
+      } else {
+        setError(errorMsg);
+      }
+    } finally {
+      setUninstallingService(false);
     }
   };
 
@@ -174,10 +271,43 @@ function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
               </div>
             </div>
             <div className="text-xs text-gray-600 dark:text-gray-300">
-              硬件探测完成，已存入数据库，硬件发生变动时请酌情重新扫描并设置编码器相关参数
+              硬件探测完成，已保存到数据库。硬件变动时请重新扫描并设置编码器参数
             </div>
           </div>
         )}
+      </div>
+
+      <div className="p-4 border rounded dark:border-gray-700">
+        <h3 className="font-medium mb-2">服务模式管理</h3>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+          将后端安装为 Windows 系统服务，实现开机自启和后台运行。
+        </p>
+        <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-3 mb-3 text-sm">
+          <p className="font-medium text-yellow-800 dark:text-yellow-200 mb-1">⚠️ 重要提示</p>
+          <ul className="text-yellow-700 dark:text-yellow-300 text-xs space-y-1 list-disc list-inside">
+            <li>需要管理员权限才能安装/卸载服务</li>
+            <li>如果后端当前没有管理员权限，将提示使用命令行方式</li>
+            <li>安装后服务将自动启动并配置为开机自启</li>
+            <li>Agent 将配置为用户登录时自动启动</li>
+            <li>服务模式下通过 Agent 代理启动录制进程</li>
+          </ul>
+        </div>
+        <div className="space-y-2">
+          <button 
+            onClick={handleInstallService} 
+            disabled={installingService}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-bold py-2 px-4 rounded w-full"
+          >
+            {installingService ? '安装中...' : '安装为系统服务'}
+          </button>
+          <button 
+            onClick={handleUninstallService} 
+            disabled={uninstallingService}
+            className="bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white font-bold py-2 px-4 rounded w-full"
+          >
+            {uninstallingService ? '卸载中...' : '卸载系统服务'}
+          </button>
+        </div>
       </div>
 
       <div className="p-4 border rounded dark:border-gray-700">
@@ -417,7 +547,7 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
                         value={cliPath}
                         onChange={e => setCliPath(e.target.value)}
                         className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
-                        placeholder="例如: C:\Program Files\cli-capture\cli-capture.exe"
+                        placeholder="例如：C:\Program Files\cli-capture\cli-capture.exe"
                     />
                     <p className="text-xs text-gray-500 mt-1">留空将导致录制、推流和硬件探测时报错</p>
                 </div>
@@ -428,7 +558,7 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
                         value={globalPath}
                         onChange={e => setGlobalPath(e.target.value)}
                         className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
-                        placeholder="例如: D:\AllRecordings"
+                        placeholder="例如：D:\录像文件"
                     />
                     <p className="text-xs text-gray-500 mt-1">留空则使用默认路径</p>
                 </div>
@@ -439,7 +569,7 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
                         value={serverName}
                         onChange={e => setServerName(e.target.value)}
                         className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
-                        placeholder="例如: 会议室录制主机"
+                        placeholder="例如：会议室录制主机"
                     />
                 </div>
                 <div>
@@ -494,7 +624,7 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
                         )}
                     </div>
                     <div>
-                        <label className="block text-sm font-medium mb-1">默认最大帧率 (FPS)</label>
+                        <label className="block text-sm font-medium mb-1 h-6 flex items-center">默认最大帧率 (FPS)</label>
                         <input 
                             type="number" 
                             value={recordConfig.max_fps}
@@ -503,7 +633,10 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium mb-1">默认最大码率 (Kbps)</label>
+                        <label className="block text-sm font-medium mb-1 h-6 flex items-center">
+                            默认最大码率 (Kbps)
+                            <BitrateHelper />
+                        </label>
                         <input 
                             type="number" 
                             value={recordConfig.max_bitrate}

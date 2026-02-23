@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
+import PasswordStrengthIndicator from '../components/PasswordStrengthIndicator';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -59,7 +60,9 @@ export default function Login() {
       navigate('/');
     } catch (err: any) {
       console.error(err);
-      setError(err.response?.data || '认证失败');
+      // 改进错误信息显示
+      const errorMessage = err.response?.data || err.message || '认证失败';
+      setError(typeof errorMessage === 'string' ? errorMessage : JSON.stringify(errorMessage));
     }
   };
 
@@ -99,6 +102,7 @@ export default function Login() {
               className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" 
               required 
             />
+            {isRegistering && <PasswordStrengthIndicator password={formData.password} />}
           </div>
           
           {isRegistering && (

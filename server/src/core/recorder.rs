@@ -1,14 +1,20 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::process::{Command, Child};
 use tokio::fs;
 use uuid::Uuid;
 use anyhow::Result;
 use serde::{Serialize, Deserialize};
+use crate::core::agent_client::AgentClient;
+
+pub enum RecorderMode {
+    Direct,
+    Service { agent_client: AgentClient },
+}
 
 pub struct RecorderManager {
-    processes: RwLock<HashMap<Uuid, (Child, String)>>, // Child process, Task type (recording/streaming)
+    processes: RwLock<HashMap<Uuid, (Option<Child>, u32, String)>>, // Child (if direct), PID, Task type
+    mode: RecorderMode,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,8 +43,18 @@ impl StopRequest {
 
 impl RecorderManager {
     pub fn new() -> Self {
+        let mode = if is_service_mode() {
+            let agent_addr = std::env::var("AGENT_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".to_string());
+            RecorderMode::Service {
+                agent_client: AgentClient::new(agent_addr),
+            }
+        } else {
+            RecorderMode::Direct
+        };
+
         Self {
             processes: RwLock::new(HashMap::new()),
+            mode,
         }
     }
 
@@ -54,11 +70,20 @@ impl RecorderManager {
 
         validate_cli_path(&cli_path).await?;
 
-        let mut cmd = Command::new(&cli_path);
-        cmd.args(args);
+        match &self.mode {
+            RecorderMode::Direct => {
+                let mut cmd = Command::new(&cli_path);
+                cmd.args(args);
 
-        let child = cmd.spawn().map_err(|e| anyhow::anyhow!("Failed to spawn process '{}': {}", cli_path, e))?;
-        processes.insert(user_id, (child, task_type));
+                let child = cmd.spawn().map_err(|e| anyhow::anyhow!("Failed to spawn process '{}': {}", cli_path, e))?;
+                let pid = child.id().unwrap_or(0);
+                processes.insert(user_id, (Some(child), pid, task_type));
+            }
+            RecorderMode::Service { agent_client } => {
+                let pid = agent_client.start_recording(cli_path, args).await?;
+                processes.insert(user_id, (None, pid, task_type));
+            }
+        }
         
         Ok(())
     }
@@ -66,9 +91,30 @@ impl RecorderManager {
     pub async fn stop_recording(&self, user_id: Uuid) -> Result<()> {
         let mut processes = self.processes.write().await;
         
-        if let Some((mut child, _)) = processes.remove(&user_id) {
-            let _ = child.kill().await; // Ignore if already dead
-            let _ = child.wait().await;
+        if let Some((child_opt, pid, _)) = processes.remove(&user_id) {
+            match &self.mode {
+                RecorderMode::Direct => {
+                    if let Some(mut child) = child_opt {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                    }
+                }
+                RecorderMode::Service { .. } => {
+                    // In service mode, kill process by PID
+                    #[cfg(windows)]
+                    {
+                        let _ = std::process::Command::new("taskkill")
+                            .args(["/PID", &pid.to_string(), "/F"])
+                            .output();
+                    }
+                    #[cfg(unix)]
+                    {
+                        let _ = std::process::Command::new("kill")
+                            .args(["-9", &pid.to_string()])
+                            .output();
+                    }
+                }
+            }
             Ok(())
         } else {
             Err(anyhow::anyhow!("No active process found"))
@@ -77,7 +123,7 @@ impl RecorderManager {
 
     pub async fn get_task_type(&self, user_id: Uuid) -> Option<String> {
         let processes = self.processes.read().await;
-        processes.get(&user_id).map(|(_, t)| t.clone())
+        processes.get(&user_id).map(|(_, _, t)| t.clone())
     }
 
     pub async fn is_recording(&self, user_id: Uuid) -> bool {
@@ -115,4 +161,10 @@ async fn validate_cli_path(cli_path: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+
+fn is_service_mode() -> bool {
+    std::env::args().any(|arg| arg == "--service")
+        || std::env::var("RUN_AS_SERVICE").map(|v| v == "1").unwrap_or(false)
 }

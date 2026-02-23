@@ -87,8 +87,21 @@ async fn setup_db(
     if Path::new("init.lock").exists() {
         return (StatusCode::BAD_REQUEST, "Already initialized").into_response();
     }
-    if config.jwt_secret.trim().is_empty() {
+    
+    // Validate JWT secret strength
+    let jwt_secret = config.jwt_secret.trim();
+    if jwt_secret.is_empty() {
         return (StatusCode::BAD_REQUEST, "JWT_SECRET is required").into_response();
+    }
+    if jwt_secret.len() < 32 {
+        return (StatusCode::BAD_REQUEST, "JWT_SECRET must be at least 32 characters for security").into_response();
+    }
+    // Check for weak patterns
+    if jwt_secret.chars().all(|c| c.is_numeric()) {
+        return (StatusCode::BAD_REQUEST, "JWT_SECRET cannot be all numbers").into_response();
+    }
+    if jwt_secret.to_lowercase() == jwt_secret || jwt_secret.to_uppercase() == jwt_secret {
+        return (StatusCode::BAD_REQUEST, "JWT_SECRET should contain mixed case characters").into_response();
     }
 
     let url = format!(
@@ -155,15 +168,39 @@ async fn setup_db(
     let env_content = format!(
         "DATABASE_URL={}\nRUST_LOG=server=debug,tower_http=debug\nJWT_SECRET={}\n",
         url,
-        config.jwt_secret.trim()
+        jwt_secret
     );
     
     if let Err(e) = std::fs::write(".env", env_content) {
          return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write .env: {}", e)).into_response();
     }
-    std::env::set_var("JWT_SECRET", config.jwt_secret.trim());
+    std::env::set_var("JWT_SECRET", jwt_secret);
 
     (StatusCode::OK, "Database connected and migrated").into_response()
+}
+
+fn validate_admin_password(password: &str) -> Result<(), &'static str> {
+    // Minimum length
+    if password.len() < 8 {
+        return Err("Admin password must be at least 8 characters long");
+    }
+    
+    // Maximum length to prevent DoS
+    if password.len() > 128 {
+        return Err("Password must not exceed 128 characters");
+    }
+    
+    // Check for at least one letter (uppercase or lowercase)
+    if !password.chars().any(|c| c.is_alphabetic()) {
+        return Err("Password must contain at least one letter");
+    }
+    
+    // Check for at least one digit
+    if !password.chars().any(|c| c.is_numeric()) {
+        return Err("Password must contain at least one number");
+    }
+    
+    Ok(())
 }
 
 async fn setup_admin(
@@ -179,6 +216,11 @@ async fn setup_admin(
         Some(p) => p,
         None => return (StatusCode::BAD_REQUEST, "Database not configured yet").into_response(),
     };
+
+    // Validate admin password strength
+    if let Err(e) = validate_admin_password(&config.password) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
 
     let password_hash = match bcrypt::hash(&config.password, bcrypt::DEFAULT_COST) {
         Ok(h) => h,

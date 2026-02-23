@@ -34,7 +34,7 @@ export default function Dashboard() {
         }
       })
       .catch((err) => {
-        console.error("Status check failed", err);
+        console.error("状态检查失败", err);
         setLoading(false);
       });
   }, [navigate, backendUrl]);
@@ -53,11 +53,11 @@ export default function Dashboard() {
       <nav className="bg-white dark:bg-gray-800 shadow px-6 py-4">
         <div className="max-w-7xl mx-auto flex justify-between items-center w-full">
           <div>
-            <h1 className="text-xl font-bold">Alls Recorder</h1>
+            <h1 className="text-xl font-bold">录制系统</h1>
             {backendName && <div className="text-xs text-gray-500">{backendName}</div>}
           </div>
           <div className="flex items-center space-x-4">
-              <span className="text-sm text-gray-500 capitalize">{role}</span>
+              <span className="text-sm text-gray-500 capitalize">{role === 'admin' ? '管理员' : '用户'}</span>
               <button onClick={handleLogout} className="text-sm text-red-500 hover:text-red-700">退出登录</button>
           </div>
         </div>

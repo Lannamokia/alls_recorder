@@ -128,7 +128,7 @@ export default function UserDashboard() {
   }, [sentRequest]); // Add sentRequest dependency to update polling logic if needed
 
   const handleRequestStop = async (targetUserId: string) => {
-      if (!confirm('确定要请求停止该用户的录制吗？')) return;
+      if (!confirm('确定要请求对方停止录制吗？')) return;
       try {
           await axios.post(`${baseUrl}/api/recorder/request-stop`, { target_user_id: targetUserId }, {
               headers: { Authorization: `Bearer ${token}` }

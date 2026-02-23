@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
+import PasswordStrengthIndicator from '../components/PasswordStrengthIndicator';
 
 export default function InitPage() {
   const navigate = useNavigate();
@@ -47,7 +48,9 @@ export default function InitPage() {
       setError('');
     } catch (err: any) {
       console.error(err);
-      setError(err.response?.data || '数据库连接失败');
+      // 改进错误信息显示
+      const errorMessage = err.response?.data || err.message || '数据库连接失败';
+      setError(typeof errorMessage === 'string' ? errorMessage : JSON.stringify(errorMessage));
     }
   };
 
@@ -69,7 +72,9 @@ export default function InitPage() {
       navigate('/login');
     } catch (err: any) {
       console.error(err);
-      setError(err.response?.data || '创建管理员失败');
+      // 改进错误信息显示
+      const errorMessage = err.response?.data || err.message || '创建管理员失败';
+      setError(typeof errorMessage === 'string' ? errorMessage : JSON.stringify(errorMessage));
     }
   };
 
@@ -113,6 +118,9 @@ export default function InitPage() {
                 <input type="text" value={dbConfig.jwt_secret} onChange={e => setDbConfig({...dbConfig, jwt_secret: e.target.value})} className="flex-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
                 <button type="button" onClick={() => setDbConfig({...dbConfig, jwt_secret: generateSecret()})} className="px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100">随机生成</button>
               </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                至少 32 字符，建议使用随机生成
+              </p>
             </div>
             <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">下一步</button>
           </form>
@@ -126,6 +134,7 @@ export default function InitPage() {
             <div>
               <label className="block text-sm font-medium mb-1">密码</label>
               <input type="password" value={adminConfig.password} onChange={e => setAdminConfig({...adminConfig, password: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
+              <PasswordStrengthIndicator password={adminConfig.password} />
             </div>
             <div>
               <label className="block text-sm font-medium mb-1">确认密码</label>

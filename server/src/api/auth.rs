@@ -84,6 +84,30 @@ async fn login(
     }
 }
 
+fn validate_password(password: &str) -> Result<(), &'static str> {
+    // Minimum length
+    if password.len() < 8 {
+        return Err("Password must be at least 8 characters long");
+    }
+    
+    // Maximum length to prevent DoS
+    if password.len() > 128 {
+        return Err("Password must not exceed 128 characters");
+    }
+    
+    // Check for at least one letter (uppercase or lowercase)
+    if !password.chars().any(|c| c.is_alphabetic()) {
+        return Err("Password must contain at least one letter");
+    }
+    
+    // Check for at least one digit
+    if !password.chars().any(|c| c.is_numeric()) {
+        return Err("Password must contain at least one number");
+    }
+    
+    Ok(())
+}
+
 async fn register(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AuthPayload>,
@@ -93,6 +117,11 @@ async fn register(
         Some(p) => p,
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
+
+    // Validate password strength
+    if let Err(e) = validate_password(&payload.password) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
 
     // Check if user exists
     let exists = match sqlx::query("SELECT id FROM users WHERE username = $1")

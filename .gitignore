@@ -9,3 +9,6 @@
 .DS_Store
 /cli-capture/obs-studio/
 /dist/
+/.vscode/
+/.kiro/
+service.md

@@ -133,6 +133,53 @@ fn clamp_resolution(requested: &str, max_value: &str) -> (i32, i32) {
     dims_for_rank(max_rank, false)
 }
 
+fn validate_device_id(id: &str) -> Result<(), &'static str> {
+    if id.is_empty() {
+        return Ok(());
+    }
+    // Device IDs should only contain alphanumeric, hyphens, underscores, colons, and spaces
+    // Reject any shell metacharacters or path traversal attempts
+    let forbidden_chars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '{', '}', '[', ']', '\\', '"', '\'', '\n', '\r'];
+    if id.chars().any(|c| forbidden_chars.contains(&c)) {
+        return Err("Invalid characters in device ID");
+    }
+    if id.contains("..") {
+        return Err("Path traversal not allowed");
+    }
+    Ok(())
+}
+
+fn validate_rtmp_url(url: &str) -> Result<(), &'static str> {
+    if url.is_empty() {
+        return Ok(());
+    }
+    // RTMP URL should start with rtmp:// or rtmps://
+    if !url.starts_with("rtmp://") && !url.starts_with("rtmps://") {
+        return Err("Invalid RTMP URL format");
+    }
+    // Check for shell metacharacters
+    let forbidden_chars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '{', '}', '[', ']', '\\', '"', '\'', '\n', '\r'];
+    if url.chars().any(|c| forbidden_chars.contains(&c)) {
+        return Err("Invalid characters in RTMP URL");
+    }
+    Ok(())
+}
+
+fn validate_filename(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("Filename cannot be empty");
+    }
+    // Filename should not contain path separators or special characters
+    let forbidden_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0', '\n', '\r', ';', '&', '$', '`'];
+    if name.chars().any(|c| forbidden_chars.contains(&c)) {
+        return Err("Invalid characters in filename");
+    }
+    if name.contains("..") {
+        return Err("Path traversal not allowed in filename");
+    }
+    Ok(())
+}
+
 async fn build_start_params(
     pool: &sqlx::PgPool,
     user_id: Uuid,
@@ -159,6 +206,13 @@ async fn build_start_params(
     let desktop_audio = user_config.as_ref().and_then(|c| c.desktop_audio.clone()).unwrap_or_default();
     let mic_audio = user_config.as_ref().and_then(|c| c.mic_audio.clone()).unwrap_or_default();
     let monitor_id = user_config.as_ref().and_then(|c| c.monitor_id.clone()).unwrap_or_default();
+
+    // Validate all user inputs to prevent command injection
+    validate_device_id(&monitor_id).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_device_id(&desktop_audio).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_device_id(&mic_audio).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_rtmp_url(&rtmp_url).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_device_id(&rtmp_key).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
 
     let mut args = Vec::new();
     args.push("--bitrate".to_string());
@@ -207,6 +261,9 @@ async fn build_start_params(
     let mut filename = None;
     if mode == "record" {
         let name = filename_override.unwrap_or_else(|| format!("{}_{}.mp4", username, chrono::Utc::now().timestamp()));
+        
+        // Validate filename
+        validate_filename(&name).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
 
         let global_path_row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = 'global_recording_path'")
             .fetch_optional(pool)

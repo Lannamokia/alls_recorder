@@ -11,11 +11,13 @@ export default function BackendDiscovery() {
   const navigate = useNavigate();
   const [found, setFound] = useState<BackendInfo[]>([]);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [manualInput, setManualInput] = useState('');
-  const [scanPrefix, setScanPrefix] = useState('192.168.1.');
-  const [scanStart, setScanStart] = useState(1);
-  const [scanEnd, setScanEnd] = useState(50);
+  const [scanPrefix, setScanPrefix] = useState('');
   const [scanning, setScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState(0);
+  const [scanTotal, setScanTotal] = useState(0);
+  const [newlyDiscovered, setNewlyDiscovered] = useState<Set<string>>(new Set());
 
   const [candidates, setCandidates] = useState<string[]>(() => {
     const raw = localStorage.getItem('backend_candidates');
@@ -78,6 +80,25 @@ export default function BackendDiscovery() {
     });
   }, [getCanonicalKey, persistCandidates]);
 
+  const addFoundWithMark = useCallback((info: BackendInfo) => {
+    const key = getCanonicalKey(info.baseUrl);
+    setFound(prev => {
+      if (prev.some(item => getCanonicalKey(item.baseUrl) === key)) return prev;
+      setNewlyDiscovered(s => new Set(s).add(key));
+      return [...prev, info];
+    });
+    setCandidates(prev => {
+      const nextCandidates = Array.from(
+        new Map(
+          [...prev, info.baseUrl].map(item => [getCanonicalKey(item), item])
+        ).values()
+      );
+      candidatesRef.current = nextCandidates;
+      persistCandidates(nextCandidates);
+      return nextCandidates;
+    });
+  }, [getCanonicalKey, persistCandidates]);
+
   const probeBackend = useCallback(async (baseUrl: string) => {
     const now = Date.now();
     const last = lastProbeRef.current.get(baseUrl) || 0;
@@ -99,8 +120,28 @@ export default function BackendDiscovery() {
     }
   }, [addFound]);
 
+  const probeBackendWithMark = useCallback(async (baseUrl: string) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1200);
+    try {
+      const res = await fetch(`${baseUrl}/api/setup/info`, { signal: controller.signal });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const name = typeof data?.name === 'string' ? data.name : baseUrl;
+      const initialized = Boolean(data?.initialized);
+      const info = { baseUrl, name, initialized };
+      addFoundWithMark(info);
+      return info;
+    } catch (e) {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }, [addFoundWithMark]);
+
   const quickDiscover = useCallback(async () => {
     setError('');
+    setSuccess('');
     const bases = new Set<string>();
     const currentHost = window.location.hostname;
     if (currentHost) bases.add(normalizeBaseUrl(currentHost));
@@ -124,6 +165,7 @@ export default function BackendDiscovery() {
 
   const handleManualAdd = async () => {
     setError('');
+    setSuccess('');
     const baseUrl = normalizeBaseUrl(manualInput);
     if (!baseUrl) {
       setError('地址格式不正确');
@@ -134,30 +176,58 @@ export default function BackendDiscovery() {
 
   const scanSubnet = async () => {
     setError('');
-    const start = Math.max(1, Math.min(254, scanStart));
-    const end = Math.max(1, Math.min(254, scanEnd));
-    if (!scanPrefix.trim().endsWith('.')) {
-      setError('网段前缀需以 . 结尾');
+    setSuccess('');
+    const prefix = scanPrefix.trim();
+    
+    // 验证 IP 前缀格式
+    const parts = prefix.split('.');
+    if (parts.length !== 3 || !parts.every(p => {
+      const num = parseInt(p);
+      return !isNaN(num) && num >= 0 && num <= 255;
+    })) {
+      setError('请输入有效的 IPv4 前三段（例如：192.168.1）');
       return;
     }
+    
     setScanning(true);
+    setScanProgress(0);
+    setScanTotal(255);
+    
     const targets: string[] = [];
-    const from = Math.min(start, end);
-    const to = Math.max(start, end);
-    for (let i = from; i <= to; i += 1) {
-      targets.push(`http://${scanPrefix}${i}:3000`);
+    for (let i = 1; i <= 255; i += 1) {
+      targets.push(`http://${prefix}.${i}:3000`);
     }
-    const limit = 20;
+    
+    const limit = 30;
+    let completed = 0;
     let index = 0;
+    const discovered: BackendInfo[] = [];
+    
     const workers = new Array(limit).fill(0).map(async () => {
       while (index < targets.length) {
         const baseUrl = targets[index];
         index += 1;
-        await probeBackend(baseUrl);
+        const result = await probeBackendWithMark(baseUrl);
+        if (result) {
+          discovered.push(result);
+        }
+        completed += 1;
+        setScanProgress(completed);
       }
     });
+    
     await Promise.all(workers);
     setScanning(false);
+    setScanProgress(0);
+    setScanTotal(0);
+    
+    // 显示扫描结果
+    if (discovered.length > 0) {
+      const list = discovered.map((d, i) => `${i + 1}. ${d.name}`).join('\n');
+      setSuccess(`已在 ${prefix}.0/24 上发现如下设备后端：\n${list}`);
+    } else {
+      setError(`在 ${prefix}.0/24 上未发现任何后端设备`);
+    }
   };
 
   useEffect(() => {
@@ -169,11 +239,12 @@ export default function BackendDiscovery() {
       <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-md w-full max-w-2xl">
         <h1 className="text-2xl font-bold mb-4 text-center">发现后端</h1>
         {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">{error}</div>}
+        {success && <div className="bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded mb-4 whitespace-pre-line">{success}</div>}
         <div className="space-y-4">
           <div className="flex gap-2">
             <input
               type="text"
-              placeholder="输入后端地址或 IP"
+              placeholder="输入后端地址或IP"
               value={manualInput}
               onChange={e => setManualInput(e.target.value)}
               className="flex-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
@@ -182,36 +253,37 @@ export default function BackendDiscovery() {
               添加
             </button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-            <input
-              type="text"
-              value={scanPrefix}
-              onChange={e => setScanPrefix(e.target.value)}
-              className="p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
-            />
-            <input
-              type="number"
-              min={1}
-              max={254}
-              value={scanStart}
-              onChange={e => setScanStart(parseInt(e.target.value) || 1)}
-              className="p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
-            />
-            <input
-              type="number"
-              min={1}
-              max={254}
-              value={scanEnd}
-              onChange={e => setScanEnd(parseInt(e.target.value) || 50)}
-              className="p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
-            />
-            <button
-              onClick={scanSubnet}
-              disabled={scanning}
-              className="px-4 py-2 bg-gray-700 hover:bg-gray-800 text-white rounded disabled:opacity-50"
-            >
-              {scanning ? '扫描中...' : '扫描网段'}
-            </button>
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={scanPrefix}
+                onChange={e => setScanPrefix(e.target.value)}
+                placeholder="例如：192.168.1"
+                className="flex-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+              />
+              <button
+                onClick={scanSubnet}
+                disabled={scanning}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-800 text-white rounded disabled:opacity-50 whitespace-nowrap"
+              >
+                {scanning ? '扫描中...' : '扫描网段'}
+              </button>
+            </div>
+            {scanning && scanTotal > 0 && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs text-gray-600 dark:text-gray-400">
+                  <span>扫描进度</span>
+                  <span>{scanProgress} / {scanTotal}</span>
+                </div>
+                <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+                  <div 
+                    className="bg-blue-600 h-full transition-all duration-300 ease-out"
+                    style={{ width: `${(scanProgress / scanTotal) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
           <div>
             <button onClick={quickDiscover} className="text-sm text-blue-500 hover:underline">
@@ -222,28 +294,37 @@ export default function BackendDiscovery() {
             {found.length === 0 ? (
               <div className="p-4 text-sm text-gray-500">未发现后端，可手动添加或扫描网段</div>
             ) : (
-              found.map(item => (
-                <div key={item.baseUrl} className="p-4 flex items-center justify-between">
-                  <div>
-                    <div className="font-medium flex items-center gap-2">
-                      <span>{item.name}</span>
-                      {!item.initialized && (
-                        <span className="text-xs px-2 py-0.5 rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200">
-                          未初始化
-                        </span>
-                      )}
+              found.map(item => {
+                const key = getCanonicalKey(item.baseUrl);
+                const isNew = newlyDiscovered.has(key);
+                return (
+                  <div key={item.baseUrl} className="p-4 flex items-center justify-between">
+                    <div>
+                      <div className="font-medium flex items-center gap-2">
+                        <span>{item.name}</span>
+                        {isNew && (
+                          <span className="text-xs px-2 py-0.5 rounded bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200">
+                            新发现
+                          </span>
+                        )}
+                        {!item.initialized && (
+                          <span className="text-xs px-2 py-0.5 rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200">
+                            未初始化
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-500">{item.baseUrl}</div>
+                      <div className="text-xs text-gray-500">{item.initialized ? '已初始化' : '未初始化'}</div>
                     </div>
-                    <div className="text-xs text-gray-500">{item.baseUrl}</div>
-                    <div className="text-xs text-gray-500">{item.initialized ? '已初始化' : '未初始化'}</div>
+                    <button
+                      onClick={() => handleSelect(item)}
+                      className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded"
+                    >
+                      {item.initialized ? '选择' : '去初始化'}
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handleSelect(item)}
-                    className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded"
-                  >
-                    {item.initialized ? '选择' : '去初始化'}
-                  </button>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
