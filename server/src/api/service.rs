@@ -174,25 +174,26 @@ async fn perform_install() -> Result<String, String> {
     fs::write(&agent_config_path, serde_json::to_string_pretty(&agent_config).unwrap())
         .map_err(|e| format!("Failed to write agent config: {}", e))?;
 
-    // 添加到用户启动项
-    let output = Command::new("reg")
+    let output = Command::new("schtasks")
         .args([
-            "add",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            "/v",
+            "/Create",
+            "/SC",
+            "ONLOGON",
+            "/TN",
             "AllsRecorderAgent",
-            "/t",
-            "REG_SZ",
-            "/d",
+            "/TR",
             &format!("\"{}\" --agent", exe_path_str),
-            "/f",
+            "/RL",
+            "LIMITED",
+            "/IT",
+            "/F",
         ])
         .output()
-        .map_err(|e| format!("Failed to add to startup: {}", e))?;
+        .map_err(|e| format!("Failed to create scheduled task: {}", e))?;
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to add agent to startup: {}", error));
+        return Err(format!("Failed to create agent scheduled task: {}", error));
     }
 
     // 启动服务
@@ -293,14 +294,12 @@ async fn perform_uninstall() -> Result<String, String> {
         return Err(format!("Failed to delete service: {}", error));
     }
 
-    // 删除 Agent 启动项
-    let _ = Command::new("reg")
+    let _ = Command::new("schtasks")
         .args([
-            "delete",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            "/v",
+            "/Delete",
+            "/TN",
             "AllsRecorderAgent",
-            "/f",
+            "/F",
         ])
         .output();
 
@@ -312,5 +311,5 @@ async fn perform_uninstall() -> Result<String, String> {
         let _ = fs::remove_dir_all(&agent_dir);
     }
 
-    Ok("Service uninstalled successfully. Agent configuration and startup entries have been removed.".to_string())
+    Ok("Service uninstalled successfully. Agent configuration and scheduled task have been removed.".to_string())
 }

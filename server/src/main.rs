@@ -352,25 +352,26 @@ fn install_service() -> anyhow::Result<()> {
     fs::write(&agent_config_path, serde_json::to_string_pretty(&agent_config)?)?;
     println!("✓ Agent configuration created at: {}", agent_config_path.display());
 
-    // 添加到用户启动项（HKCU\Software\Microsoft\Windows\CurrentVersion\Run）
-    let output = Command::new("reg")
+    let output = Command::new("schtasks")
         .args([
-            "add",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            "/v",
+            "/Create",
+            "/SC",
+            "ONLOGON",
+            "/TN",
             "AllsRecorderAgent",
-            "/t",
-            "REG_SZ",
-            "/d",
+            "/TR",
             &format!("\"{}\" --agent", exe_path_str),
-            "/f",
+            "/RL",
+            "LIMITED",
+            "/IT",
+            "/F",
         ])
         .output()?;
 
     if output.status.success() {
-        println!("✓ Agent added to user startup");
+        println!("✓ Agent scheduled task created");
     } else {
-        eprintln!("Warning: Failed to add agent to startup: {}", String::from_utf8_lossy(&output.stderr));
+        eprintln!("Warning: Failed to create agent scheduled task: {}", String::from_utf8_lossy(&output.stderr));
     }
 
     println!("\nService installation completed!");
@@ -427,21 +428,19 @@ fn uninstall_service() -> anyhow::Result<()> {
 
     println!("✓ Service deleted successfully");
 
-    // 删除 Agent 启动项
-    let output = Command::new("reg")
+    let output = Command::new("schtasks")
         .args([
-            "delete",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            "/v",
+            "/Delete",
+            "/TN",
             "AllsRecorderAgent",
-            "/f",
+            "/F",
         ])
         .output()?;
 
     if output.status.success() {
-        println!("✓ Agent removed from user startup");
+        println!("✓ Agent scheduled task removed");
     } else {
-        println!("Warning: Failed to remove agent from startup (may not exist)");
+        println!("Warning: Failed to remove agent scheduled task (may not exist)");
     }
 
     // 可选：删除 Agent 配置文件
