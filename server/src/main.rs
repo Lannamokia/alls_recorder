@@ -124,14 +124,42 @@ fn init_tracing() {
 async fn build_state() -> Arc<AppState> {
     init_tracing();
     let db_pool = if let Ok(url) = std::env::var("DATABASE_URL") {
-        match sqlx::postgres::PgPoolOptions::new().connect(&url).await {
-            Ok(pool) => {
-                tracing::info!("Connected to database");
-                Some(pool)
+        if is_service_mode() {
+            let start = std::time::Instant::now();
+            let mut last_err: Option<String> = None;
+            let mut pool: Option<sqlx::PgPool> = None;
+            while start.elapsed() < std::time::Duration::from_secs(60) {
+                match sqlx::postgres::PgPoolOptions::new().connect(&url).await {
+                    Ok(p) => {
+                        tracing::info!("Connected to database");
+                        pool = Some(p);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = Some(e.to_string());
+                        tracing::warn!("Failed to connect to database, retrying in 3s: {}", e);
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    }
+                }
             }
-            Err(e) => {
-                tracing::warn!("Failed to connect to database: {}", e);
-                None
+            if pool.is_none() {
+                if let Some(err) = last_err {
+                    tracing::warn!("Failed to connect to database after retries: {}", err);
+                } else {
+                    tracing::warn!("Failed to connect to database after retries");
+                }
+            }
+            pool
+        } else {
+            match sqlx::postgres::PgPoolOptions::new().connect(&url).await {
+                Ok(pool) => {
+                    tracing::info!("Connected to database");
+                    Some(pool)
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to connect to database: {}", e);
+                    None
+                }
             }
         }
     } else {

@@ -139,7 +139,7 @@ fn validate_device_id(id: &str) -> Result<(), &'static str> {
     }
     // Device IDs should only contain alphanumeric, hyphens, underscores, colons, and spaces
     // Reject any shell metacharacters or path traversal attempts
-    let forbidden_chars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '{', '}', '[', ']', '\\', '"', '\'', '\n', '\r'];
+    let forbidden_chars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '[', ']', '\\', '"', '\'', '\n', '\r'];
     if id.chars().any(|c| forbidden_chars.contains(&c)) {
         return Err("Invalid characters in device ID");
     }
