@@ -15,6 +15,7 @@ pub struct AgentResponse {
     pub success: bool,
     pub message: String,
     pub pid: Option<u32>,
+    pub output: Option<String>,
 }
 
 pub struct AgentServer {
@@ -60,15 +61,18 @@ impl AgentServer {
 async fn handle_command(cmd: AgentCommand) -> AgentResponse {
     match cmd.command.as_str() {
         "start" => start_cli_process(cmd.cli_path, cmd.args).await,
+        "scan" => run_cli_scan(cmd.cli_path, cmd.args).await,
         "stop" => AgentResponse {
             success: false,
             message: "Stop command not implemented yet".to_string(),
             pid: None,
+            output: None,
         },
         _ => AgentResponse {
             success: false,
             message: format!("Unknown command: {}", cmd.command),
             pid: None,
+            output: None,
         },
     }
 }
@@ -86,12 +90,47 @@ async fn start_cli_process(cli_path: String, args: Vec<String>) -> AgentResponse
                 success: true,
                 message: "Process started successfully".to_string(),
                 pid,
+                output: None,
             }
         }
         Err(e) => AgentResponse {
             success: false,
             message: format!("Failed to start process: {}", e),
             pid: None,
+            output: None,
+        },
+    }
+}
+
+async fn run_cli_scan(cli_path: String, args: Vec<String>) -> AgentResponse {
+    use tokio::process::Command;
+
+    match Command::new(&cli_path).args(&args).output().await {
+        Ok(output) => {
+            if output.status.success() {
+                AgentResponse {
+                    success: true,
+                    message: "Scan completed".to_string(),
+                    pid: None,
+                    output: Some(String::from_utf8_lossy(&output.stdout).to_string()),
+                }
+            } else {
+                AgentResponse {
+                    success: false,
+                    message: format!(
+                        "Scan failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    ),
+                    pid: None,
+                    output: None,
+                }
+            }
+        }
+        Err(e) => AgentResponse {
+            success: false,
+            message: format!("Failed to execute CLI: {}", e),
+            pid: None,
+            output: None,
         },
     }
 }

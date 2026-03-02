@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use tokio::fs;
+use crate::core::agent_client::AgentClient;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HardwareInfo {
@@ -20,25 +21,35 @@ pub struct Device {
 pub async fn probe_hardware(cli_path: String) -> anyhow::Result<HardwareInfo> {
     validate_cli_path(&cli_path).await?;
 
-    // Call CLI
-    let output = tokio::process::Command::new(&cli_path)
-        .arg("--scan")
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to execute CLI '{}': {}", cli_path, e))?;
+    let stdout = if is_service_mode() {
+        let agent_addr = std::env::var("AGENT_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".to_string());
+        let agent_client = AgentClient::new(agent_addr);
+        agent_client.scan_hardware(cli_path).await?
+    } else {
+        let output = tokio::process::Command::new(&cli_path)
+            .arg("--scan")
+            .output()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to execute CLI '{}': {}", cli_path, e))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("CLI scan failed: {}", stderr));
-    }
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!("CLI scan failed: {}", stderr));
+        }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
     // Attempt to find JSON in output if there's other noise, or assume pure JSON
     // For now assume pure JSON or JSON is the last part
     let info: HardwareInfo = serde_json::from_str(&stdout)
         .map_err(|e| anyhow::anyhow!("Failed to parse scan output: {} (Output: {})", e, stdout))?;
 
     Ok(info)
+}
+
+fn is_service_mode() -> bool {
+    std::env::args().any(|arg| arg == "--service")
+        || std::env::var("RUN_AS_SERVICE").map(|v| v == "1").unwrap_or(false)
 }
 
 async fn validate_cli_path(cli_path: &str) -> anyhow::Result<()> {

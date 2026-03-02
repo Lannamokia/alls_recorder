@@ -15,6 +15,7 @@ pub struct AgentResponse {
     pub success: bool,
     pub message: String,
     pub pid: Option<u32>,
+    pub output: Option<String>,
 }
 
 pub struct AgentClient {
@@ -50,6 +51,24 @@ impl AgentClient {
         
         if response.success {
             response.pid.ok_or_else(|| anyhow::anyhow!("No PID returned"))
+        } else {
+            Err(anyhow::anyhow!("Agent error: {}", response.message))
+        }
+    }
+
+    pub async fn scan_hardware(&self, cli_path: String) -> Result<String> {
+        let cmd = AgentCommand {
+            command: "scan".to_string(),
+            cli_path,
+            args: vec!["--scan".to_string()],
+        };
+
+        let response = self.send_command(cmd).await?;
+
+        if response.success {
+            response
+                .output
+                .ok_or_else(|| anyhow::anyhow!("No scan output returned"))
         } else {
             Err(anyhow::anyhow!("Agent error: {}", response.message))
         }
