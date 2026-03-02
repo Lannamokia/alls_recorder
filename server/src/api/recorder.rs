@@ -165,6 +165,16 @@ fn validate_rtmp_url(url: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn validate_rtmp_key(key: &str) -> Result<(), &'static str> {
+    if key.is_empty() {
+        return Ok(());
+    }
+    if key.chars().any(|c| c.is_control()) {
+        return Err("Invalid characters in RTMP key");
+    }
+    Ok(())
+}
+
 fn validate_filename(name: &str) -> Result<(), &'static str> {
     if name.is_empty() {
         return Err("Filename cannot be empty");
@@ -212,7 +222,7 @@ async fn build_start_params(
     validate_device_id(&desktop_audio).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
     validate_device_id(&mic_audio).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
     validate_rtmp_url(&rtmp_url).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
-    validate_device_id(&rtmp_key).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_rtmp_key(&rtmp_key).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
 
     let mut args = Vec::new();
     args.push("--bitrate".to_string());
