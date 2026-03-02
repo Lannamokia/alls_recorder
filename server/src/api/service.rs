@@ -136,7 +136,7 @@ async fn perform_install() -> Result<String, String> {
             "binPath=",
             &format!("\"{}\" --service", exe_path_str),
             "start=",
-            "auto",
+            "delayed-auto",
             "DisplayName=",
             "Alls Recorder Service",
         ])

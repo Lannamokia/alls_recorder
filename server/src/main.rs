@@ -124,42 +124,14 @@ fn init_tracing() {
 async fn build_state() -> Arc<AppState> {
     init_tracing();
     let db_pool = if let Ok(url) = std::env::var("DATABASE_URL") {
-        if is_service_mode() {
-            let start = std::time::Instant::now();
-            let mut last_err: Option<String> = None;
-            let mut pool: Option<sqlx::PgPool> = None;
-            while start.elapsed() < std::time::Duration::from_secs(60) {
-                match sqlx::postgres::PgPoolOptions::new().connect(&url).await {
-                    Ok(p) => {
-                        tracing::info!("Connected to database");
-                        pool = Some(p);
-                        break;
-                    }
-                    Err(e) => {
-                        last_err = Some(e.to_string());
-                        tracing::warn!("Failed to connect to database, retrying in 3s: {}", e);
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    }
-                }
+        match sqlx::postgres::PgPoolOptions::new().connect(&url).await {
+            Ok(pool) => {
+                tracing::info!("Connected to database");
+                Some(pool)
             }
-            if pool.is_none() {
-                if let Some(err) = last_err {
-                    tracing::warn!("Failed to connect to database after retries: {}", err);
-                } else {
-                    tracing::warn!("Failed to connect to database after retries");
-                }
-            }
-            pool
-        } else {
-            match sqlx::postgres::PgPoolOptions::new().connect(&url).await {
-                Ok(pool) => {
-                    tracing::info!("Connected to database");
-                    Some(pool)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to connect to database: {}", e);
-                    None
-                }
+            Err(e) => {
+                tracing::warn!("Failed to connect to database: {}", e);
+                None
             }
         }
     } else {
@@ -197,12 +169,65 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let state = build_state().await;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown.await;
+        let _ = shutdown_tx.send(true);
+    });
+    if is_service_mode() {
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            let state_clone = state.clone();
+            let mut shutdown_rx = shutdown_rx.clone();
+            tokio::spawn(async move {
+                let retry_interval = std::time::Duration::from_secs(3);
+                loop {
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                    let pool_opt = {
+                        let db_guard = state_clone.db.read().await;
+                        db_guard.clone()
+                    };
+                    let mut needs_connect = pool_opt.is_none();
+                    if let Some(pool) = pool_opt {
+                        if let Err(e) = sqlx::query("SELECT 1").execute(&pool).await {
+                            tracing::warn!("Database connection lost, retrying in 3s: {}", e);
+                            needs_connect = true;
+                            let mut db_guard = state_clone.db.write().await;
+                            *db_guard = None;
+                        }
+                    }
+                    if needs_connect {
+                        match sqlx::postgres::PgPoolOptions::new().connect(&url).await {
+                            Ok(pool) => {
+                                let mut db_guard = state_clone.db.write().await;
+                                *db_guard = Some(pool);
+                                tracing::info!("Connected to database");
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to connect to database, retrying in 3s: {}", e);
+                            }
+                        }
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(retry_interval) => {}
+                        _ = async {
+                            let _ = shutdown_rx.changed().await;
+                        } => break,
+                    }
+                }
+            });
+        }
+    }
     let app = build_app(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     tracing::info!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
+        .with_graceful_shutdown(async move {
+            let mut shutdown_rx = shutdown_rx.clone();
+            let _ = shutdown_rx.changed().await;
+        })
         .await?;
     Ok(())
 }
@@ -341,7 +366,7 @@ fn install_service() -> anyhow::Result<()> {
             "binPath=",
             &format!("\"{}\" --service", exe_path_str),
             "start=",
-            "auto",
+            "delayed-auto",
             "DisplayName=",
             "Alls Recorder Service",
         ])
