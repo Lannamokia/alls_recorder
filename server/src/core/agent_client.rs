@@ -57,10 +57,14 @@ impl AgentClient {
     }
 
     pub async fn scan_hardware(&self, cli_path: String) -> Result<String> {
+        self.scan_hardware_with_args(cli_path, vec!["--scan".to_string()]).await
+    }
+
+    pub async fn scan_hardware_with_args(&self, cli_path: String, args: Vec<String>) -> Result<String> {
         let cmd = AgentCommand {
             command: "scan".to_string(),
             cli_path,
-            args: vec!["--scan".to_string()],
+            args,
         };
 
         let response = self.send_command(cmd).await?;

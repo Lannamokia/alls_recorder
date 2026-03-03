@@ -127,6 +127,9 @@ async fn build_state() -> Arc<AppState> {
         match sqlx::postgres::PgPoolOptions::new().connect(&url).await {
             Ok(pool) => {
                 tracing::info!("Connected to database");
+                if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
+                    tracing::error!("Failed to run migrations on startup: {}", e);
+                }
                 Some(pool)
             }
             Err(e) => {
@@ -200,6 +203,9 @@ where
                     if needs_connect {
                         match sqlx::postgres::PgPoolOptions::new().connect(&url).await {
                             Ok(pool) => {
+                                if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
+                                    tracing::error!("Failed to run migrations on reconnect: {}", e);
+                                }
                                 let mut db_guard = state_clone.db.write().await;
                                 *db_guard = Some(pool);
                                 tracing::info!("Connected to database");

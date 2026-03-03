@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { X } from 'lucide-react';
 import BitrateHelper from './BitrateHelper';
@@ -17,6 +17,9 @@ interface UserConfig {
   mic_audio: string;
   rtmp_url: string;
   rtmp_key: string;
+  capture_mode: string;
+  capture_method: string;
+  window_id: string;
 }
 
 interface HardwareDevice {
@@ -29,6 +32,7 @@ interface HardwareInfo {
   desktop_audio: HardwareDevice[];
   microphone: HardwareDevice[];
   encoders: HardwareDevice[];
+  windows?: { title: string; exe: string; id: string }[];
 }
 
 const deviceForbiddenChars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '[', ']', '\\', '"', '\'', '\n', '\r'];
@@ -56,6 +60,12 @@ const validateDeviceIdValue = (value: string, label: string) => {
   return '';
 };
 
+const validateWindowIdValue = (value: string) => {
+  if (!value) return '';
+  if ([...value].some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) return '录制窗口包含非法字符';
+  return '';
+};
+
 const validateRtmpUrlValue = (value: string) => {
   if (!value) return '';
   if (!value.startsWith('rtmp://') && !value.startsWith('rtmps://')) return 'RTMP 地址格式错误';
@@ -69,6 +79,36 @@ const validateRtmpKeyValue = (value: string) => {
   return '';
 };
 
+const resolutionOptions = [
+  { value: '3840x2160', label: '4K 横屏 (3840x2160)', rank: 3 },
+  { value: '2160x3840', label: '4K 竖屏 (2160x3840)', rank: 3 },
+  { value: '1920x1080', label: '1080p 横屏 (1920x1080)', rank: 2 },
+  { value: '1080x1920', label: '1080p 竖屏 (1080x1920)', rank: 2 },
+  { value: '1280x720', label: '720p 横屏 (1280x720)', rank: 1 },
+  { value: '720x1280', label: '720p 竖屏 (720x1280)', rank: 1 },
+  { value: '854x480', label: '480p 横屏 (854x480)', rank: 0 },
+  { value: '480x854', label: '480p 竖屏 (480x854)', rank: 0 }
+];
+
+const rankFromValue = (value: string) => {
+  const v = value.trim().toLowerCase();
+  if (v === '4k' || v === '2160p') return 3;
+  if (v === '1080p') return 2;
+  if (v === '720p') return 1;
+  if (v === '480p') return 0;
+  const parts = v.split('x');
+  if (parts.length === 2) {
+    const w = parseInt(parts[0], 10);
+    const h = parseInt(parts[1], 10);
+    const maxSide = Math.max(w || 0, h || 0);
+    if (maxSide >= 3000) return 3;
+    if (maxSide >= 1900) return 2;
+    if (maxSide >= 1200) return 1;
+    return 0;
+  }
+  return 2;
+};
+
 export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModalProps) {
   const [config, setConfig] = useState<UserConfig>({
     max_bitrate: 4000,
@@ -78,7 +118,10 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
     desktop_audio: '',
     mic_audio: '',
     rtmp_url: '',
-    rtmp_key: ''
+    rtmp_key: '',
+    capture_mode: 'screen',
+    capture_method: 'auto',
+    window_id: ''
   });
   const [hardwareInfo, setHardwareInfo] = useState<HardwareInfo | null>(null);
   const [loading, setLoading] = useState(false);
@@ -91,43 +134,7 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
   const token = localStorage.getItem('token');
   const baseUrl = localStorage.getItem('backend_url') || 'http://localhost:3000';
 
-  useEffect(() => {
-    if (isOpen) {
-      fetchConfig();
-    }
-  }, [isOpen]);
-
-  const resolutionOptions = [
-    { value: '3840x2160', label: '4K 横屏 (3840x2160)', rank: 3 },
-    { value: '2160x3840', label: '4K 竖屏 (2160x3840)', rank: 3 },
-    { value: '1920x1080', label: '1080p 横屏 (1920x1080)', rank: 2 },
-    { value: '1080x1920', label: '1080p 竖屏 (1080x1920)', rank: 2 },
-    { value: '1280x720', label: '720p 横屏 (1280x720)', rank: 1 },
-    { value: '720x1280', label: '720p 竖屏 (720x1280)', rank: 1 },
-    { value: '854x480', label: '480p 横屏 (854x480)', rank: 0 },
-    { value: '480x854', label: '480p 竖屏 (480x854)', rank: 0 }
-  ];
-
-  const rankFromValue = (value: string) => {
-    const v = value.trim().toLowerCase();
-    if (v === '4k' || v === '2160p') return 3;
-    if (v === '1080p') return 2;
-    if (v === '720p') return 1;
-    if (v === '480p') return 0;
-    const parts = v.split('x');
-    if (parts.length === 2) {
-      const w = parseInt(parts[0], 10);
-      const h = parseInt(parts[1], 10);
-      const maxSide = Math.max(w || 0, h || 0);
-      if (maxSide >= 3000) return 3;
-      if (maxSide >= 1900) return 2;
-      if (maxSide >= 1200) return 1;
-      return 0;
-    }
-    return 2;
-  };
-
-  const fetchConfig = async () => {
+  const fetchConfig = useCallback(async () => {
     setLoading(true);
     try {
       const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
@@ -158,7 +165,10 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
         desktop_audio: resData.desktop_audio || '',
         mic_audio: resData.mic_audio || '',
         rtmp_url: resData.rtmp_url || '',
-        rtmp_key: resData.rtmp_key || ''
+        rtmp_key: resData.rtmp_key || '',
+        capture_mode: resData.capture_mode || 'screen',
+        capture_method: resData.capture_method || 'auto',
+        window_id: resData.window_id || ''
       }));
       setHardwareInfo(hardwareRes?.data || null);
     } catch (err) {
@@ -166,7 +176,13 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
     } finally {
       setLoading(false);
     }
-  };
+  }, [baseUrl, token]);
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchConfig();
+    }
+  }, [fetchConfig, isOpen]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -181,6 +197,8 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
     if (bitrateError) errors.push(bitrateError);
     const monitorError = validateDeviceIdValue(config.monitor_id, '录制屏幕');
     if (monitorError) errors.push(monitorError);
+    const windowError = validateWindowIdValue(config.window_id);
+    if (windowError) errors.push(windowError);
     const desktopAudioError = validateDeviceIdValue(config.desktop_audio, '桌面音频');
     if (desktopAudioError) errors.push(desktopAudioError);
     const micAudioError = validateDeviceIdValue(config.mic_audio, '麦克风');
@@ -196,6 +214,9 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
       if (config.max_bitrate > systemRecordConfig.max_bitrate) {
         errors.push(`码率超过系统限制 ${systemRecordConfig.max_bitrate}`);
       }
+    }
+    if (config.capture_mode === 'window' && !config.window_id) {
+      errors.push('请选择录制窗口');
     }
     if (errors.length > 0) {
       setMsg(`保存失败：${errors[0]}`);
@@ -261,22 +282,72 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
                 </div>
 
                 <div>
-                    <label className="block text-sm font-medium mb-1">录制屏幕</label>
+                    <label className="block text-sm font-medium mb-1">采集模式</label>
                     <select
-                        value={config.monitor_id}
-                        onChange={e => setConfig({...config, monitor_id: e.target.value})}
+                        value={config.capture_mode}
+                        onChange={e => setConfig({...config, capture_mode: e.target.value})}
                         className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
-                        disabled={!hardwareInfo?.screens?.length}
                     >
-                        <option value="">默认/自动</option>
-                        {config.monitor_id && !hardwareInfo?.screens?.some(s => s.id === config.monitor_id) && (
-                            <option value={config.monitor_id}>{config.monitor_id}</option>
-                        )}
-                        {hardwareInfo?.screens?.map(s => (
-                            <option key={s.id} value={s.id}>{s.name}</option>
-                        ))}
+                        <option value="screen">屏幕采集</option>
+                        <option value="window">窗口采集</option>
                     </select>
                 </div>
+
+                {config.capture_mode === 'screen' && (
+                  <div>
+                      <label className="block text-sm font-medium mb-1">录制屏幕</label>
+                      <select
+                          value={config.monitor_id}
+                          onChange={e => setConfig({...config, monitor_id: e.target.value})}
+                          className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+                          disabled={!hardwareInfo?.screens?.length}
+                      >
+                          <option value="">默认/自动</option>
+                          {config.monitor_id && !hardwareInfo?.screens?.some(s => s.id === config.monitor_id) && (
+                              <option value={config.monitor_id}>{config.monitor_id}</option>
+                          )}
+                          {hardwareInfo?.screens?.map(s => (
+                              <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                      </select>
+                  </div>
+                )}
+
+                {config.capture_mode === 'screen' && (
+                  <div>
+                      <label className="block text-sm font-medium mb-1">采集路径</label>
+                      <select
+                          value={config.capture_method}
+                          onChange={e => setConfig({...config, capture_method: e.target.value})}
+                          className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+                      >
+                          <option value="auto">自动</option>
+                          <option value="dxgi">DXGI</option>
+                          <option value="wgc">WGC</option>
+                      </select>
+                      <p className="text-xs text-red-500 mt-1">Windows 10 1809 版本以下无法使用 WGC 采集</p>
+                  </div>
+                )}
+
+                {config.capture_mode === 'window' && (
+                  <div>
+                      <label className="block text-sm font-medium mb-1">录制窗口</label>
+                      <select
+                          value={config.window_id}
+                          onChange={e => setConfig({...config, window_id: e.target.value})}
+                          className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+                          disabled={!hardwareInfo?.windows?.length}
+                      >
+                          <option value="">请选择窗口</option>
+                          {config.window_id && !hardwareInfo?.windows?.some(w => w.id === config.window_id) && (
+                              <option value={config.window_id}>{config.window_id}</option>
+                          )}
+                          {hardwareInfo?.windows?.map(w => (
+                              <option key={w.id} value={w.id}>{`${w.title} (${w.exe})`}</option>
+                          ))}
+                      </select>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-4">
                     <div>

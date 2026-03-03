@@ -46,10 +46,13 @@ export default function InitPage() {
       await axios.post(`${backendUrl}/api/setup/db`, dbConfig);
       setStep(2);
       setError('');
-    } catch (err: any) {
-      console.error(err);
-      // 改进错误信息显示
-      const errorMessage = err.response?.data || err.message || '数据库连接失败';
+    } catch (error) {
+      console.error(error);
+      const errorMessage = axios.isAxiosError(error)
+        ? error.response?.data ?? error.message
+        : error instanceof Error
+          ? error.message
+          : '数据库连接失败';
       setError(typeof errorMessage === 'string' ? errorMessage : JSON.stringify(errorMessage));
     }
   };
@@ -70,10 +73,13 @@ export default function InitPage() {
         password: adminConfig.password 
       });
       navigate('/login');
-    } catch (err: any) {
-      console.error(err);
-      // 改进错误信息显示
-      const errorMessage = err.response?.data || err.message || '创建管理员失败';
+    } catch (error) {
+      console.error(error);
+      const errorMessage = axios.isAxiosError(error)
+        ? error.response?.data ?? error.message
+        : error instanceof Error
+          ? error.message
+          : '创建管理员失败';
       setError(typeof errorMessage === 'string' ? errorMessage : JSON.stringify(errorMessage));
     }
   };

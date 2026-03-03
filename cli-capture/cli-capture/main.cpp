@@ -6,14 +6,19 @@
 #include <util/dstr.h>
 #include <util/config-file.h>
 #include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
 #include <iostream>
 #include <vector>
 #include <string>
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 #include <csignal>
 #include <iomanip>
+#include <algorithm>
+#include <cctype>
 
 // Global flag for interrupt
 enum StopReason {
@@ -28,8 +33,11 @@ enum StopReason {
 std::atomic<bool> keep_running(true);
 std::atomic<int> stop_reason(StopReasonNone);
 std::atomic<long long> output_stop_code(0);
+std::atomic<bool> output_stop_received(false);
 std::mutex stop_mutex;
+std::condition_variable stop_cv;
 std::string output_stop_error;
+bool video_reset_done = false;
 
 constexpr int kMonitorMethodAuto = 0;
 constexpr int kMonitorMethodDxgi = 1;
@@ -61,6 +69,33 @@ std::string infer_copy_path(int method, const std::string& encoder_id) {
         return std::string("auto(dxgi|wgc) -> gpu-texture -> ") + enc_path;
     }
     return "unknown";
+}
+
+bool reset_video_once(obs_video_info* ovi, bool quiet) {
+    if (video_reset_done) {
+        return true;
+    }
+    if (!quiet) {
+        std::cerr << "Resetting video..." << std::endl;
+    }
+    int ret = obs_reset_video(ovi);
+    if (ret != OBS_VIDEO_SUCCESS) {
+        if (!quiet) {
+            std::cerr << "Failed to reset video, error code: " << ret << std::endl;
+        }
+        return false;
+    }
+    if (!quiet) {
+        std::cerr << "Video reset successful." << std::endl;
+    }
+    video_reset_done = true;
+    return true;
+}
+
+void clear_output_sources() {
+    obs_set_output_source(0, NULL);
+    obs_set_output_source(1, NULL);
+    obs_set_output_source(2, NULL);
 }
 
 void set_stop_reason(int reason) {
@@ -108,23 +143,35 @@ void output_stop_cb(void *param, calldata_t *data) {
     }
     output_stop_code.store(code);
     set_stop_reason(StopReasonOutputStopped);
+    output_stop_received.store(true);
     keep_running = false;
+    stop_cv.notify_all();
 }
 
 struct Args {
     bool scan = false;
+    bool scan_windows = false;
     int monitor_idx = 0;
+    int method = kMonitorMethodAuto;
     std::string audio_desktop_id;
     std::string audio_mic_id;
     std::string output_file;
     std::string rtmp_url;
     std::string rtmp_key;
+    std::string window_id;
     std::string encoder = "obs_x264";
     int bitrate = 2500;
     int width = 0; // 0 means auto-detect
     int height = 0;
     int fps = 30;
     int rotation = 0;
+};
+
+struct WindowInfo {
+    std::string title;
+    std::string exe_name;
+    std::string class_name;
+    std::string game_capture_id;
 };
 
 struct MonitorInfo {
@@ -141,6 +188,66 @@ struct MonitorEnumContext {
     std::vector<MonitorInfo> monitors;
     int index = 0;
 };
+
+BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
+    auto* list = reinterpret_cast<std::vector<WindowInfo>*>(lParam);
+
+    if (!IsWindowVisible(hwnd))
+        return TRUE;
+    if (IsIconic(hwnd))
+        return TRUE;
+
+    char title[512] = {};
+    if (GetWindowTextA(hwnd, title, sizeof(title)) == 0)
+        return TRUE;
+    if (strlen(title) == 0)
+        return TRUE;
+
+    char class_buf[256] = {};
+    GetClassNameA(hwnd, class_buf, sizeof(class_buf));
+    if (strcmp(class_buf, "Shell_TrayWnd") == 0)
+        return TRUE;
+    if (strcmp(class_buf, "Progman") == 0)
+        return TRUE;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == 0)
+        return TRUE;
+
+    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!hProc)
+        return TRUE;
+
+    char exe_path[MAX_PATH] = {};
+    DWORD size = MAX_PATH;
+    if (!QueryFullProcessImageNameA(hProc, 0, exe_path, &size)) {
+        CloseHandle(hProc);
+        return TRUE;
+    }
+    CloseHandle(hProc);
+
+    std::string exe_full(exe_path);
+    std::string exe_name = exe_full;
+    size_t slash = exe_full.find_last_of("\\/");
+    if (slash != std::string::npos) {
+        exe_name = exe_full.substr(slash + 1);
+    }
+
+    WindowInfo info;
+    info.title = title;
+    info.exe_name = exe_name;
+    info.class_name = class_buf;
+    info.game_capture_id = info.title + ":" + info.exe_name + ":" + info.class_name;
+    list->push_back(info);
+    return TRUE;
+}
+
+std::vector<WindowInfo> get_capturable_windows() {
+    std::vector<WindowInfo> list;
+    EnumWindows(EnumWindowsProc, (LPARAM)&list);
+    return list;
+}
 
 // Monitor enumeration callback
 BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMonitor, LPARAM dwData) {
@@ -229,6 +336,34 @@ void list_screens() {
     print_json_array("screens", monitor_list);
 }
 
+void list_windows() {
+    auto windows = get_capturable_windows();
+    auto escape_json = [](const std::string& s) {
+        std::string out;
+        for (char c : s) {
+            if (c == '"')
+                out += "\\\"";
+            else if (c == '\\')
+                out += "\\\\";
+            else
+                out += c;
+        }
+        return out;
+    };
+    std::cout << "  \"windows\": [\n";
+    for (size_t i = 0; i < windows.size(); ++i) {
+        std::cout << "    { "
+                  << "\"title\": \"" << escape_json(windows[i].title) << "\", "
+                  << "\"exe\": \"" << escape_json(windows[i].exe_name) << "\", "
+                  << "\"id\": \"" << escape_json(windows[i].game_capture_id) << "\""
+                  << " }";
+        if (i < windows.size() - 1)
+            std::cout << ",";
+        std::cout << "\n";
+    }
+    std::cout << "  ]\n";
+}
+
 // Function to list audio devices
 void list_audio_devices(const char* source_id, const std::string& json_key) {
     obs_source_t* source = obs_source_create(source_id, "temp_audio", NULL, NULL);
@@ -279,6 +414,8 @@ void parse_args(int argc, char* argv[], Args& args) {
         std::string arg = argv[i];
         if (arg == "--scan") {
             args.scan = true;
+        } else if (arg == "--scan-windows") {
+            args.scan_windows = true;
         } else if (arg == "--monitor" && i + 1 < argc) {
             args.monitor_idx = std::stoi(argv[++i]);
         } else if (arg == "--desktop-audio" && i + 1 < argc) {
@@ -291,6 +428,8 @@ void parse_args(int argc, char* argv[], Args& args) {
             args.rtmp_url = argv[++i];
         } else if (arg == "--key" && i + 1 < argc) {
             args.rtmp_key = argv[++i];
+        } else if (arg == "--window" && i + 1 < argc) {
+            args.window_id = argv[++i];
         } else if (arg == "--encoder" && i + 1 < argc) {
             args.encoder = argv[++i];
         } else if (arg == "--bitrate" && i + 1 < argc) {
@@ -301,6 +440,26 @@ void parse_args(int argc, char* argv[], Args& args) {
             args.height = std::stoi(argv[++i]);
         } else if (arg == "--fps" && i + 1 < argc) {
             args.fps = std::stoi(argv[++i]);
+        } else if (arg == "--method" && i + 1 < argc) {
+            std::string value = argv[++i];
+            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+                return (char)std::tolower(c);
+            });
+            if (value == "dxgi") {
+                args.method = kMonitorMethodDxgi;
+            } else if (value == "wgc") {
+                args.method = kMonitorMethodWgc;
+            } else if (value == "auto") {
+                args.method = kMonitorMethodAuto;
+            } else {
+                try {
+                    int method = std::stoi(value);
+                    if (method == kMonitorMethodDxgi || method == kMonitorMethodWgc || method == kMonitorMethodAuto) {
+                        args.method = method;
+                    }
+                } catch (...) {
+                }
+            }
         }
     }
 }
@@ -323,6 +482,14 @@ int main(int argc, char *argv[]) {
 
     Args args;
     parse_args(argc, argv, args);
+
+    if (args.scan_windows) {
+        base_set_log_handler(silent_log_handler, nullptr);
+        print_json_start();
+        list_windows();
+        print_json_end();
+        return 0;
+    }
 
     const bool quiet_scan = args.scan;
     if (quiet_scan) {
@@ -383,22 +550,11 @@ int main(int argc, char *argv[]) {
     ovi.scale_type = OBS_SCALE_BICUBIC;
     
 
-    // Attempt to reset video early for better enumeration support if needed
-    if (!quiet_scan) {
-        std::cerr << "Resetting video..." << std::endl;
-    }
-    int ret = obs_reset_video(&ovi);
-    if (ret != OBS_VIDEO_SUCCESS) {
-        if (!quiet_scan) {
-            std::cerr << "Failed to reset video, error code: " << ret << std::endl;
-        }
-    } else {
-        if (!quiet_scan) {
-            std::cerr << "Video reset successful." << std::endl;
-        }
-    }
-
     if (args.scan) {
+        if (!reset_video_once(&ovi, quiet_scan)) {
+            obs_shutdown();
+            return -1;
+        }
         print_json_start();
         list_screens();
         list_audio_devices("wasapi_output_capture", "desktop_audio");
@@ -445,8 +601,9 @@ int main(int argc, char *argv[]) {
     ovi.colorspace = VIDEO_CS_709;
     ovi.range = VIDEO_RANGE_PARTIAL;
     ovi.gpu_conversion = true;
+    ovi.scale_type = OBS_SCALE_BILINEAR;
 
-    if (obs_reset_video(&ovi) != OBS_VIDEO_SUCCESS) {
+    if (!reset_video_once(&ovi, quiet_scan)) {
         std::cerr << "Failed to reset video" << std::endl;
         obs_shutdown();
         return -1;
@@ -467,10 +624,22 @@ int main(int argc, char *argv[]) {
     obs_scene_t* scene = obs_scene_create("Main Scene");
     
     // Create Monitor Source
-    obs_data_t* monitor_settings = obs_data_create();
-    obs_data_set_int(monitor_settings, "monitor", args.monitor_idx);
-    obs_source_t* monitor_source = obs_source_create("monitor_capture", "Screen Capture", monitor_settings, NULL);
-    obs_data_release(monitor_settings);
+    obs_source_t* monitor_source = nullptr;
+    if (!args.window_id.empty()) {
+        obs_data_t* s = obs_data_create();
+        obs_data_set_string(s, "window", args.window_id.c_str());
+        obs_data_set_int(s, "capture_mode", 1);
+        obs_data_set_bool(s, "allow_transparency", false);
+        obs_data_set_bool(s, "force_scaling", false);
+        monitor_source = obs_source_create("game_capture", "Game Capture", s, NULL);
+        obs_data_release(s);
+    } else {
+        obs_data_t* monitor_settings = obs_data_create();
+        obs_data_set_int(monitor_settings, "monitor", args.monitor_idx);
+        obs_data_set_int(monitor_settings, "method", args.method);
+        monitor_source = obs_source_create("monitor_capture", "Screen Capture", monitor_settings, NULL);
+        obs_data_release(monitor_settings);
+    }
 
     uint32_t canvas_width = args.width;
     uint32_t canvas_height = args.height;
@@ -510,7 +679,8 @@ int main(int argc, char *argv[]) {
         std::cerr << "Failed to create monitor source" << std::endl;
     }
 
-    obs_set_output_source(0, obs_scene_get_source(scene));
+    obs_source_t* scene_source = obs_scene_get_source(scene);
+    obs_set_output_source(0, scene_source);
     
     // Audio Sources
     if (!args.audio_desktop_id.empty()) {
@@ -558,6 +728,7 @@ int main(int argc, char *argv[]) {
         obs_data_release(settings);
     } else {
         std::cerr << "No output specified. Use --output <file> or --rtmp <url>" << std::endl;
+        clear_output_sources();
         obs_scene_release(scene);
         obs_shutdown();
         return -1;
@@ -571,6 +742,7 @@ int main(int argc, char *argv[]) {
         if (service) {
             obs_service_release(service);
         }
+        clear_output_sources();
         obs_scene_release(scene);
         obs_shutdown();
         return -1;
@@ -587,6 +759,27 @@ int main(int argc, char *argv[]) {
 
     // Configure Video Encoder
     obs_data_t* v_settings = obs_data_create();
+    const char* encoder_id = obs_encoder_get_id(v_encoder);
+    if (encoder_id && strstr(encoder_id, "nvenc")) {
+        obs_data_set_string(v_settings, "preset", "p3");
+        obs_data_set_string(v_settings, "preset2", "p3");
+        obs_data_set_string(v_settings, "multipass", "disabled");
+        obs_data_set_bool(v_settings, "lookahead", false);
+        obs_data_set_bool(v_settings, "adaptive_quantization", false);
+        obs_data_set_bool(v_settings, "psycho_aq", false);
+        obs_data_set_int(v_settings, "bf", 0);
+    } else if (encoder_id && strstr(encoder_id, "amf")) {
+        obs_data_set_string(v_settings, "preset", "speed");
+        obs_data_set_int(v_settings, "bf", 0);
+        obs_data_set_bool(v_settings, "pre_analysis", false);
+    } else if (encoder_id && strstr(encoder_id, "qsv")) {
+        obs_data_set_string(v_settings, "target_usage", "TU7");
+        obs_data_set_string(v_settings, "latency", "ultra-low");
+        obs_data_set_int(v_settings, "bframes", 0);
+    } else if (encoder_id && strcmp(encoder_id, "obs_x264") == 0) {
+        obs_data_set_string(v_settings, "preset", "superfast");
+        obs_data_set_string(v_settings, "tune", "zerolatency");
+    }
     obs_data_set_int(v_settings, "bitrate", args.bitrate);
     obs_encoder_update(v_encoder, v_settings);
     obs_data_release(v_settings);
@@ -616,6 +809,7 @@ int main(int argc, char *argv[]) {
         obs_output_release(output);
         obs_encoder_release(v_encoder);
         obs_encoder_release(a_encoder);
+        clear_output_sources();
         obs_scene_release(scene);
         if (service) {
             obs_service_release(service);
@@ -653,10 +847,17 @@ int main(int argc, char *argv[]) {
     } else if (reason == StopReasonConsoleClose) {
         std::cerr << "Stopped by console close" << std::endl;
     }
-    obs_output_stop(output);
+    if (reason != StopReasonOutputStopped) {
+        obs_output_stop(output);
+        std::unique_lock<std::mutex> lock(stop_mutex);
+        stop_cv.wait_for(lock, std::chrono::seconds(5), [] {
+            return output_stop_received.load();
+        });
+    }
     obs_output_release(output);
     obs_encoder_release(v_encoder);
     obs_encoder_release(a_encoder);
+    clear_output_sources();
     obs_scene_release(scene);
     if (service) {
         obs_service_release(service);

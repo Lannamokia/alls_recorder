@@ -49,7 +49,8 @@ export default function PasswordStrengthIndicator({
     
     // 复杂度加分
     if (/[a-z]/.test(password) && /[A-Z]/.test(password)) score += 10; // 大小写混合
-    if (/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) score += 10; // 特殊字符
+    const specialChars = "!@#$%^&*()_+-={}[];':\"\\|,.<>/?";
+    if ([...password].some(char => specialChars.includes(char))) score += 10; // 特殊字符
     
     // 多样性加分
     const uniqueChars = new Set(password).size;

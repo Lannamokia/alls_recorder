@@ -12,7 +12,10 @@ use std::sync::Arc;
 use crate::AppState;
 use crate::api::recorder::{
     get_user_from_header,
+    validate_capture_method,
+    validate_capture_mode,
     validate_device_id,
+    validate_window_id,
     validate_max_bitrate,
     validate_max_fps,
     validate_resolution_limit,
@@ -31,6 +34,9 @@ pub struct UserConfig {
     pub mic_audio: Option<String>,
     pub rtmp_url: Option<String>,
     pub rtmp_key: Option<String>,
+    pub capture_mode: Option<String>,
+    pub capture_method: Option<String>,
+    pub window_id: Option<String>,
 }
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -62,7 +68,7 @@ async fn get_config(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let config = sqlx::query_as::<_, UserConfig>("SELECT max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key FROM user_configs WHERE user_id = $1")
+    let config = sqlx::query_as::<_, UserConfig>("SELECT max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key, capture_mode, capture_method, window_id FROM user_configs WHERE user_id = $1")
         .bind(user_id)
         .fetch_optional(pool)
         .await
@@ -79,6 +85,9 @@ async fn get_config(
             mic_audio: None,
             rtmp_url: None,
             rtmp_key: None,
+            capture_mode: None,
+            capture_method: None,
+            window_id: None,
         }).into_response(),
     }
 }
@@ -161,11 +170,26 @@ async fn update_config(
             return (StatusCode::BAD_REQUEST, e).into_response();
         }
     }
+    if let Some(capture_mode) = payload.capture_mode.as_ref() {
+        if let Err(e) = validate_capture_mode(capture_mode) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+    }
+    if let Some(capture_method) = payload.capture_method.as_ref() {
+        if let Err(e) = validate_capture_method(capture_method) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+    }
+    if let Some(window_id) = payload.window_id.as_ref() {
+        if let Err(e) = validate_window_id(window_id) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+    }
 
     let result = sqlx::query(
         r#"
-        INSERT INTO user_configs (user_id, max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        INSERT INTO user_configs (user_id, max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key, capture_mode, capture_method, window_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (user_id)
         DO UPDATE SET
             max_bitrate = EXCLUDED.max_bitrate,
@@ -175,7 +199,10 @@ async fn update_config(
             desktop_audio = EXCLUDED.desktop_audio,
             mic_audio = EXCLUDED.mic_audio,
             rtmp_url = EXCLUDED.rtmp_url,
-            rtmp_key = EXCLUDED.rtmp_key
+            rtmp_key = EXCLUDED.rtmp_key,
+            capture_mode = EXCLUDED.capture_mode,
+            capture_method = EXCLUDED.capture_method,
+            window_id = EXCLUDED.window_id
         "#
     )
     .bind(user_id)
@@ -187,6 +214,9 @@ async fn update_config(
     .bind(payload.mic_audio)
     .bind(payload.rtmp_url)
     .bind(payload.rtmp_key)
+    .bind(payload.capture_mode)
+    .bind(payload.capture_method)
+    .bind(payload.window_id)
     .execute(pool)
     .await;
 

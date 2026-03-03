@@ -171,6 +171,16 @@ pub(crate) fn validate_rtmp_key(key: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+pub(crate) fn validate_window_id(id: &str) -> Result<(), &'static str> {
+    if id.is_empty() {
+        return Ok(());
+    }
+    if id.chars().any(|c| c.is_control()) {
+        return Err("Invalid characters in window id");
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_filename(name: &str) -> Result<(), &'static str> {
     if name.is_empty() {
         return Err("Filename cannot be empty");
@@ -203,6 +213,27 @@ pub(crate) fn validate_max_fps(value: i32) -> Result<(), &'static str> {
         Ok(())
     }
 }
+pub(crate) fn validate_capture_mode(value: &str) -> Result<(), &'static str> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    if value == "screen" || value == "window" {
+        Ok(())
+    } else {
+        Err("Invalid capture_mode")
+    }
+}
+
+pub(crate) fn validate_capture_method(value: &str) -> Result<(), &'static str> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    match value {
+        "auto" | "dxgi" | "wgc" | "0" | "1" | "2" => Ok(()),
+        _ => Err("Invalid capture_method"),
+    }
+}
+
 
 pub(crate) fn validate_max_bitrate(value: i32) -> Result<(), &'static str> {
     if value < 0 {
@@ -269,7 +300,7 @@ async fn build_start_params(
     validate_resolution_value(&sys_max_res, false).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
     validate_encoder_id(&sys_encoder).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
 
-    let user_config = sqlx::query_as::<_, crate::api::user_config::UserConfig>("SELECT max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key FROM user_configs WHERE user_id = $1")
+    let user_config = sqlx::query_as::<_, crate::api::user_config::UserConfig>("SELECT max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key, capture_mode, capture_method, window_id FROM user_configs WHERE user_id = $1")
         .bind(user_id)
         .fetch_optional(pool)
         .await
@@ -286,11 +317,17 @@ async fn build_start_params(
     let desktop_audio = user_config.as_ref().and_then(|c| c.desktop_audio.clone()).unwrap_or_default();
     let mic_audio = user_config.as_ref().and_then(|c| c.mic_audio.clone()).unwrap_or_default();
     let monitor_id = user_config.as_ref().and_then(|c| c.monitor_id.clone()).unwrap_or_default();
+    let capture_mode = user_config.as_ref().and_then(|c| c.capture_mode.clone()).unwrap_or_default();
+    let capture_method = user_config.as_ref().and_then(|c| c.capture_method.clone()).unwrap_or_default();
+    let window_id = user_config.as_ref().and_then(|c| c.window_id.clone()).unwrap_or_default();
 
     // Validate all user inputs to prevent command injection
     validate_device_id(&monitor_id).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
     validate_device_id(&desktop_audio).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
     validate_device_id(&mic_audio).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_window_id(&window_id).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_capture_mode(&capture_mode).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_capture_method(&capture_method).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
     validate_rtmp_url(&rtmp_url).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
     validate_rtmp_key(&rtmp_key).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
 
@@ -333,9 +370,21 @@ async fn build_start_params(
         args.push("--mic-audio".to_string());
         args.push(mic_audio);
     }
-    if !monitor_id.is_empty() {
-        args.push("--monitor".to_string());
-        args.push(monitor_id);
+    if capture_mode == "window" {
+        if window_id.is_empty() {
+            return Err((StatusCode::BAD_REQUEST, "window_id is required for window capture").into_response());
+        }
+        args.push("--window".to_string());
+        args.push(window_id);
+    } else {
+        if !monitor_id.is_empty() {
+            args.push("--monitor".to_string());
+            args.push(monitor_id);
+        }
+        if !capture_method.is_empty() {
+            args.push("--method".to_string());
+            args.push(capture_method);
+        }
     }
 
     let mut filename = None;

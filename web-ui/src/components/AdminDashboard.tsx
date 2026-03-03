@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { Trash2, RefreshCw, Key } from 'lucide-react';
 import BitrateHelper from './BitrateHelper';
@@ -13,6 +13,27 @@ interface HardwareInfo {
   desktop_audio: HardwareDevice[];
   microphone: HardwareDevice[];
   encoders: HardwareDevice[];
+  windows?: { title: string; exe: string; id: string }[];
+}
+
+interface AdminSectionProps {
+  token: string | null;
+  baseUrl: string;
+  setError: (msg: string) => void;
+  setSuccess: (msg: string) => void;
+}
+
+interface Announcement {
+  id: string;
+  content: string;
+  created_at: string;
+}
+
+interface UserInfo {
+  id: string;
+  username: string;
+  role: string;
+  created_at: string;
 }
 
 const deviceForbiddenChars = /[&|;$`><()[\]\\'"\n\r]/;
@@ -82,29 +103,29 @@ export default function AdminDashboard() {
   );
 }
 
-function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
+function AdminActions({ token, baseUrl, setError, setSuccess }: AdminSectionProps) {
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState<HardwareInfo | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const [posting, setPosting] = useState(false);
-  const [announcements, setAnnouncements] = useState<any[]>([]);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [installingService, setInstallingService] = useState(false);
   const [uninstallingService, setUninstallingService] = useState(false);
 
-  const fetchAnnouncements = async () => {
+  const fetchAnnouncements = useCallback(async () => {
     try {
       const res = await axios.get(`${baseUrl}/api/announcements`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setAnnouncements(res.data);
-    } catch (err) {
-      console.error(err);
+    } catch (error) {
+      console.error(error);
     }
-  };
+  }, [baseUrl, token]);
 
   useEffect(() => {
     fetchAnnouncements();
-  }, []);
+  }, [fetchAnnouncements]);
 
   const handleScan = async () => {
     setScanning(true);
@@ -116,9 +137,13 @@ function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
       });
       setScanResult(res.data as HardwareInfo);
       setSuccess('硬件扫描完成');
-    } catch (err: any) {
-      console.error(err);
-      setError(err.response?.data || '扫描失败');
+    } catch (error) {
+      console.error(error);
+      if (axios.isAxiosError(error)) {
+        setError(typeof error.response?.data === 'string' ? error.response?.data : '扫描失败');
+      } else {
+        setError('扫描失败');
+      }
     } finally {
       setScanning(false);
     }
@@ -153,9 +178,10 @@ function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
           setError(res.data.message);
         }
       }
-    } catch (err: any) {
-      console.error(err);
-      const errorMsg = err.response?.data?.message || err.response?.data || '安装失败';
+    } catch (error) {
+      console.error(error);
+      const rawMessage = axios.isAxiosError(error) ? (error.response?.data?.message || error.response?.data) : undefined;
+      const errorMsg = typeof rawMessage === 'string' && rawMessage ? rawMessage : '安装失败';
       if (errorMsg.includes('Administrator privileges required')) {
         setError(
           '需要管理员权限。请按以下步骤操作：\n\n' +
@@ -200,9 +226,10 @@ function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
           setError(res.data.message);
         }
       }
-    } catch (err: any) {
-      console.error(err);
-      const errorMsg = err.response?.data?.message || err.response?.data || '卸载失败';
+    } catch (error) {
+      console.error(error);
+      const rawMessage = axios.isAxiosError(error) ? (error.response?.data?.message || error.response?.data) : undefined;
+      const errorMsg = typeof rawMessage === 'string' && rawMessage ? rawMessage : '卸载失败';
       if (errorMsg.includes('Administrator privileges required')) {
         setError(
           '需要管理员权限。请按以下步骤操作：\n\n' +
@@ -228,9 +255,13 @@ function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
       setSuccess('公告已发布');
       setAnnouncement('');
       fetchAnnouncements();
-    } catch (err: any) {
-      console.error(err);
-      setError(err.response?.data || '发布失败');
+    } catch (error) {
+      console.error(error);
+      if (axios.isAxiosError(error)) {
+        setError(typeof error.response?.data === 'string' ? error.response?.data : '发布失败');
+      } else {
+        setError('发布失败');
+      }
     } finally {
       setPosting(false);
     }
@@ -244,7 +275,8 @@ function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
       });
       setSuccess('公告已删除');
       fetchAnnouncements();
-    } catch (err: any) {
+    } catch (error) {
+      console.error(error);
       setError('删除失败');
     }
   };
@@ -376,27 +408,28 @@ function AdminActions({ token, baseUrl, setError, setSuccess }: any) {
   );
 }
 
-function UserManagement({ token, baseUrl, setError, setSuccess }: any) {
-    const [users, setUsers] = useState<any[]>([]);
+function UserManagement({ token, baseUrl, setError, setSuccess }: AdminSectionProps) {
+    const [users, setUsers] = useState<UserInfo[]>([]);
     const [loading, setLoading] = useState(false);
 
-    const fetchUsers = async () => {
+    const fetchUsers = useCallback(async () => {
         setLoading(true);
         try {
             const res = await axios.get(`${baseUrl}/api/users`, {
                 headers: { Authorization: `Bearer ${token}` }
             });
             setUsers(res.data);
-        } catch (err: any) {
+        } catch (error) {
+            console.error(error);
             setError('获取用户列表失败');
         } finally {
             setLoading(false);
         }
-    };
+    }, [baseUrl, token, setError]);
 
     useEffect(() => {
         fetchUsers();
-    }, []);
+    }, [fetchUsers]);
 
     const handleDelete = async (id: string) => {
         if (!confirm('确定要删除此用户吗？此操作不可逆。')) return;
@@ -406,7 +439,8 @@ function UserManagement({ token, baseUrl, setError, setSuccess }: any) {
             });
             setSuccess('用户已删除');
             fetchUsers();
-        } catch (err) {
+        } catch (error) {
+            console.error(error);
             setError('删除失败');
         }
     };
@@ -419,7 +453,8 @@ function UserManagement({ token, baseUrl, setError, setSuccess }: any) {
                 headers: { Authorization: `Bearer ${token}` }
             });
             setSuccess('密码已重置');
-        } catch (err) {
+        } catch (error) {
+            console.error(error);
             setError('重置密码失败');
         }
     };
@@ -461,7 +496,7 @@ function UserManagement({ token, baseUrl, setError, setSuccess }: any) {
     );
 }
 
-function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
+function SystemSettings({ token, baseUrl, setError, setSuccess }: AdminSectionProps) {
     const [cliPath, setCliPath] = useState('');
     const [globalPath, setGlobalPath] = useState('');
     const [downloadTokenTtlMinutes, setDownloadTokenTtlMinutes] = useState(60);
@@ -476,12 +511,7 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
 
-    useEffect(() => {
-        fetchSettings();
-        fetchHardwareInfo();
-    }, []);
-
-    const normalizeMaxRes = (value: string) => {
+    const normalizeMaxRes = useCallback((value: string) => {
         const v = value.trim().toLowerCase();
         if (v === '4k' || v === '2160p') return '4k';
         if (v === '1080p') return '1080p';
@@ -497,9 +527,9 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
             return '720p';
         }
         return '1080p';
-    };
+    }, []);
 
-    const fetchSettings = async () => {
+    const fetchSettings = useCallback(async () => {
         setLoading(true);
         try {
             const [pathRes, configRes, globalPathRes, ttlRes, nameRes] = await Promise.all([
@@ -517,23 +547,29 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
             setGlobalPath(globalPathRes.data.path);
             setDownloadTokenTtlMinutes(ttlRes.data.minutes ?? 60);
             setServerName(nameRes.data.name ?? '');
-        } catch (err) {
-            console.error(err);
+        } catch (error) {
+            console.error(error);
         } finally {
             setLoading(false);
         }
-    };
+    }, [baseUrl, token, normalizeMaxRes]);
 
-    const fetchHardwareInfo = async () => {
+    const fetchHardwareInfo = useCallback(async () => {
         try {
             const res = await axios.get(`${baseUrl}/api/hardware/info`, {
                 headers: { Authorization: `Bearer ${token}` }
             });
             setHardwareInfo(res.data);
-        } catch (err) {
+        } catch (error) {
+            console.error(error);
             setHardwareInfo(null);
         }
-    };
+    }, [baseUrl, token]);
+
+    useEffect(() => {
+        fetchSettings();
+        fetchHardwareInfo();
+    }, [fetchSettings, fetchHardwareInfo]);
 
     const handleSave = async () => {
         setSaving(true);
@@ -562,9 +598,9 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
                 axios.post(`${baseUrl}/api/settings/server-name`, { name: serverName }, { headers: { Authorization: `Bearer ${token}` } })
             ]);
             setSuccess('所有设置已保存');
-        } catch (err) {
-            if (axios.isAxiosError(err)) {
-                const data = err.response?.data;
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                const data = error.response?.data;
                 setError(typeof data === 'string' && data ? data : '保存失败');
             } else {
                 setError('保存失败');
