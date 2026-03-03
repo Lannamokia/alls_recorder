@@ -8,6 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::AppState;
+use crate::api::recorder::{validate_encoder_id, validate_max_bitrate, validate_max_fps, validate_resolution_value};
 
 #[derive(Serialize, Deserialize)]
 pub struct CliPathConfig {
@@ -266,6 +267,19 @@ async fn set_record_config(
         Some(p) => p,
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
+
+    if let Err(e) = validate_max_bitrate(payload.max_bitrate) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
+    if let Err(e) = validate_max_fps(payload.max_fps) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
+    if let Err(e) = validate_resolution_value(&payload.max_res, false) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
+    if let Err(e) = validate_encoder_id(&payload.video_encoder) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
 
     let mut tx = match pool.begin().await {
         Ok(tx) => tx,

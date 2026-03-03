@@ -15,6 +15,30 @@ interface HardwareInfo {
   encoders: HardwareDevice[];
 }
 
+const deviceForbiddenChars = /[&|;$`><()[\]\\'"\n\r]/;
+const resolutionLabelSet = new Set(['4k', '2160p', '1080p', '720p', '480p']);
+
+const validateNonNegativeNumber = (value: number, label: string) => {
+  if (Number.isNaN(value)) return `${label}不合法`;
+  if (value < 0) return `${label}不能为负数`;
+  return '';
+};
+
+const validateResolutionValue = (value: string) => {
+  const v = value.trim().toLowerCase();
+  if (!v) return '分辨率不能为空';
+  if (resolutionLabelSet.has(v)) return '';
+  if (/^\d+x\d+$/.test(v)) return '';
+  return '分辨率格式不正确';
+};
+
+const validateEncoderIdValue = (value: string) => {
+  if (!value.trim()) return '编码器不能为空';
+  if (deviceForbiddenChars.test(value)) return '编码器包含非法字符';
+  if (value.includes('..')) return '编码器不允许包含..';
+  return '';
+};
+
 export default function AdminDashboard() {
   const [activeTab, setActiveTab] = useState<'users' | 'settings' | 'actions'>('actions');
   const [error, setError] = useState('');
@@ -513,6 +537,22 @@ function SystemSettings({ token, baseUrl, setError, setSuccess }: any) {
 
     const handleSave = async () => {
         setSaving(true);
+        setError('');
+        setSuccess('');
+        const errors: string[] = [];
+        const resolutionError = validateResolutionValue(recordConfig.max_res);
+        if (resolutionError) errors.push(resolutionError);
+        const fpsError = validateNonNegativeNumber(recordConfig.max_fps, '默认最大帧率');
+        if (fpsError) errors.push(fpsError);
+        const bitrateError = validateNonNegativeNumber(recordConfig.max_bitrate, '默认最大码率');
+        if (bitrateError) errors.push(bitrateError);
+        const encoderError = validateEncoderIdValue(recordConfig.video_encoder);
+        if (encoderError) errors.push(encoderError);
+        if (errors.length > 0) {
+            setError(errors[0]);
+            setSaving(false);
+            return;
+        }
         try {
             await Promise.all([
                 axios.post(`${baseUrl}/api/settings/cli-path`, { path: cliPath }, { headers: { Authorization: `Bearer ${token}` } }),

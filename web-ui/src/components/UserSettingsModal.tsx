@@ -31,6 +31,44 @@ interface HardwareInfo {
   encoders: HardwareDevice[];
 }
 
+const deviceForbiddenChars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '[', ']', '\\', '"', '\'', '\n', '\r'];
+const rtmpUrlForbiddenChars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '{', '}', '[', ']', '\\', '"', '\'', '\n', '\r'];
+const resolutionLabelSet = new Set(['4k', '2160p', '1080p', '720p', '480p']);
+
+const validateNonNegativeNumber = (value: number, label: string) => {
+  if (Number.isNaN(value)) return `${label}不合法`;
+  if (value < 0) return `${label}不能为负数`;
+  return '';
+};
+
+const validateResolutionValue = (value: string) => {
+  const v = value.trim().toLowerCase();
+  if (!v) return '分辨率不能为空';
+  if (resolutionLabelSet.has(v)) return '';
+  if (/^\d+x\d+$/.test(v)) return '';
+  return '分辨率格式不正确';
+};
+
+const validateDeviceIdValue = (value: string, label: string) => {
+  if (!value) return '';
+  if ([...value].some(c => deviceForbiddenChars.includes(c))) return `${label}包含非法字符`;
+  if (value.includes('..')) return `${label}不允许包含..`;
+  return '';
+};
+
+const validateRtmpUrlValue = (value: string) => {
+  if (!value) return '';
+  if (!value.startsWith('rtmp://') && !value.startsWith('rtmps://')) return 'RTMP 地址格式错误';
+  if ([...value].some(c => rtmpUrlForbiddenChars.includes(c))) return 'RTMP 地址包含非法字符';
+  return '';
+};
+
+const validateRtmpKeyValue = (value: string) => {
+  if (!value) return '';
+  if ([...value].some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) return 'RTMP Key 包含非法控制字符';
+  return '';
+};
+
 export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModalProps) {
   const [config, setConfig] = useState<UserConfig>({
     max_bitrate: 4000,
@@ -48,6 +86,7 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState<'success' | 'error' | ''>('');
   const [maxResRank, setMaxResRank] = useState(2);
+  const [systemRecordConfig, setSystemRecordConfig] = useState<{ max_bitrate: number; max_fps: number; max_res: string } | null>(null);
 
   const token = localStorage.getItem('token');
   const baseUrl = localStorage.getItem('backend_url') || 'http://localhost:3000';
@@ -98,6 +137,11 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
         axios.get(`${baseUrl}/api/hardware/info`, { headers }).catch(() => null)
       ]);
       const maxResValue = recordRes?.data?.max_res || '1080p';
+      if (recordRes?.data) {
+        setSystemRecordConfig(recordRes.data);
+      } else {
+        setSystemRecordConfig(null);
+      }
       const rank = rankFromValue(maxResValue);
       setMaxResRank(rank);
       const allowedValues = resolutionOptions.filter(o => o.rank <= rank).map(o => o.value);
@@ -128,6 +172,37 @@ export default function UserSettingsModal({ isOpen, onClose }: UserSettingsModal
     setSaving(true);
     setMsg('');
     setMsgType('');
+    const errors: string[] = [];
+    const resolutionError = validateResolutionValue(config.resolution);
+    if (resolutionError) errors.push(resolutionError);
+    const fpsError = validateNonNegativeNumber(config.max_fps, '帧率');
+    if (fpsError) errors.push(fpsError);
+    const bitrateError = validateNonNegativeNumber(config.max_bitrate, '码率');
+    if (bitrateError) errors.push(bitrateError);
+    const monitorError = validateDeviceIdValue(config.monitor_id, '录制屏幕');
+    if (monitorError) errors.push(monitorError);
+    const desktopAudioError = validateDeviceIdValue(config.desktop_audio, '桌面音频');
+    if (desktopAudioError) errors.push(desktopAudioError);
+    const micAudioError = validateDeviceIdValue(config.mic_audio, '麦克风');
+    if (micAudioError) errors.push(micAudioError);
+    const rtmpUrlError = validateRtmpUrlValue(config.rtmp_url);
+    if (rtmpUrlError) errors.push(rtmpUrlError);
+    const rtmpKeyError = validateRtmpKeyValue(config.rtmp_key);
+    if (rtmpKeyError) errors.push(rtmpKeyError);
+    if (systemRecordConfig) {
+      if (config.max_fps > systemRecordConfig.max_fps) {
+        errors.push(`帧率超过系统限制 ${systemRecordConfig.max_fps}`);
+      }
+      if (config.max_bitrate > systemRecordConfig.max_bitrate) {
+        errors.push(`码率超过系统限制 ${systemRecordConfig.max_bitrate}`);
+      }
+    }
+    if (errors.length > 0) {
+      setMsg(`保存失败：${errors[0]}`);
+      setMsgType('error');
+      setSaving(false);
+      return;
+    }
     try {
       await axios.post(`${baseUrl}/api/user/config`, config, {
         headers: { Authorization: `Bearer ${token}` }

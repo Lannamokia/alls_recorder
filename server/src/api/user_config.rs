@@ -10,7 +10,16 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::sync::Arc;
 use crate::AppState;
-use crate::api::recorder::get_user_from_header;
+use crate::api::recorder::{
+    get_user_from_header,
+    validate_device_id,
+    validate_max_bitrate,
+    validate_max_fps,
+    validate_resolution_limit,
+    validate_resolution_value,
+    validate_rtmp_key,
+    validate_rtmp_url,
+};
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct UserConfig {
@@ -91,9 +100,65 @@ async fn update_config(
     };
 
     let sys_max_fps = get_sys_val(pool, "max_fps").await.and_then(|v| v.as_i64()).unwrap_or(30) as i32;
+    let sys_max_bitrate = get_sys_val(pool, "max_bitrate").await.and_then(|v| v.as_i64()).unwrap_or(4000) as i32;
+    let sys_max_res = get_sys_val(pool, "max_res").await.and_then(|v| v.as_str().map(String::from)).unwrap_or("1920x1080".to_string());
+
+    if let Err(e) = validate_max_fps(sys_max_fps) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
+    if let Err(e) = validate_max_bitrate(sys_max_bitrate) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
+    if let Err(e) = validate_resolution_value(&sys_max_res, false) {
+        return (StatusCode::BAD_REQUEST, e).into_response();
+    }
     if let Some(max_fps) = payload.max_fps {
+        if let Err(e) = validate_max_fps(max_fps) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
         if max_fps > sys_max_fps {
             return (StatusCode::BAD_REQUEST, format!("max_fps exceeds system limit {}", sys_max_fps)).into_response();
+        }
+    }
+    if let Some(max_bitrate) = payload.max_bitrate {
+        if let Err(e) = validate_max_bitrate(max_bitrate) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+        if max_bitrate > sys_max_bitrate {
+            return (StatusCode::BAD_REQUEST, format!("max_bitrate exceeds system limit {}", sys_max_bitrate)).into_response();
+        }
+    }
+    if let Some(resolution) = payload.resolution.as_ref() {
+        if let Err(e) = validate_resolution_value(resolution, true) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+        if let Err(e) = validate_resolution_limit(resolution, &sys_max_res) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+    }
+    if let Some(monitor_id) = payload.monitor_id.as_ref() {
+        if let Err(e) = validate_device_id(monitor_id) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+    }
+    if let Some(desktop_audio) = payload.desktop_audio.as_ref() {
+        if let Err(e) = validate_device_id(desktop_audio) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+    }
+    if let Some(mic_audio) = payload.mic_audio.as_ref() {
+        if let Err(e) = validate_device_id(mic_audio) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+    }
+    if let Some(rtmp_url) = payload.rtmp_url.as_ref() {
+        if let Err(e) = validate_rtmp_url(rtmp_url) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
+        }
+    }
+    if let Some(rtmp_key) = payload.rtmp_key.as_ref() {
+        if let Err(e) = validate_rtmp_key(rtmp_key) {
+            return (StatusCode::BAD_REQUEST, e).into_response();
         }
     }
 

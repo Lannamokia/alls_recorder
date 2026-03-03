@@ -133,12 +133,10 @@ fn clamp_resolution(requested: &str, max_value: &str) -> (i32, i32) {
     dims_for_rank(max_rank, false)
 }
 
-fn validate_device_id(id: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_device_id(id: &str) -> Result<(), &'static str> {
     if id.is_empty() {
         return Ok(());
     }
-    // Device IDs should only contain alphanumeric, hyphens, underscores, colons, and spaces
-    // Reject any shell metacharacters or path traversal attempts
     let forbidden_chars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '[', ']', '\\', '"', '\'', '\n', '\r'];
     if id.chars().any(|c| forbidden_chars.contains(&c)) {
         return Err("Invalid characters in device ID");
@@ -149,15 +147,13 @@ fn validate_device_id(id: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn validate_rtmp_url(url: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_rtmp_url(url: &str) -> Result<(), &'static str> {
     if url.is_empty() {
         return Ok(());
     }
-    // RTMP URL should start with rtmp:// or rtmps://
     if !url.starts_with("rtmp://") && !url.starts_with("rtmps://") {
         return Err("Invalid RTMP URL format");
     }
-    // Check for shell metacharacters
     let forbidden_chars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '{', '}', '[', ']', '\\', '"', '\'', '\n', '\r'];
     if url.chars().any(|c| forbidden_chars.contains(&c)) {
         return Err("Invalid characters in RTMP URL");
@@ -165,7 +161,7 @@ fn validate_rtmp_url(url: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn validate_rtmp_key(key: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_rtmp_key(key: &str) -> Result<(), &'static str> {
     if key.is_empty() {
         return Ok(());
     }
@@ -175,11 +171,10 @@ fn validate_rtmp_key(key: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn validate_filename(name: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_filename(name: &str) -> Result<(), &'static str> {
     if name.is_empty() {
         return Err("Filename cannot be empty");
     }
-    // Filename should not contain path separators or special characters
     let forbidden_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0', '\n', '\r', ';', '&', '$', '`'];
     if name.chars().any(|c| forbidden_chars.contains(&c)) {
         return Err("Invalid characters in filename");
@@ -188,6 +183,73 @@ fn validate_filename(name: &str) -> Result<(), &'static str> {
         return Err("Path traversal not allowed in filename");
     }
     Ok(())
+}
+
+pub(crate) fn validate_resolution_value(value: &str, allow_empty: bool) -> Result<(), &'static str> {
+    if value.trim().is_empty() {
+        return if allow_empty { Ok(()) } else { Err("Resolution is required") };
+    }
+    if parse_resolution_dims(value).is_some() {
+        Ok(())
+    } else {
+        Err("Invalid resolution format")
+    }
+}
+
+pub(crate) fn validate_max_fps(value: i32) -> Result<(), &'static str> {
+    if value < 0 {
+        Err("max_fps must be >= 0")
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_max_bitrate(value: i32) -> Result<(), &'static str> {
+    if value < 0 {
+        Err("max_bitrate must be >= 0")
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_encoder_id(id: &str) -> Result<(), &'static str> {
+    if id.trim().is_empty() {
+        return Err("Encoder is required");
+    }
+    let forbidden_chars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '[', ']', '\\', '"', '\'', '\n', '\r'];
+    if id.chars().any(|c| forbidden_chars.contains(&c)) {
+        return Err("Invalid characters in encoder id");
+    }
+    if id.contains("..") {
+        return Err("Path traversal not allowed");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_resolution_limit(requested: &str, max_value: &str) -> Result<(), &'static str> {
+    if requested.trim().is_empty() {
+        return Ok(());
+    }
+    let requested_rank = if let Some((w, h)) = parse_resolution_dims(requested) {
+        resolution_rank_from_dims(w, h)
+    } else {
+        return Err("Invalid resolution format");
+    };
+    let max_rank = {
+        let from_label = resolution_rank_from_label(max_value);
+        if from_label >= 0 {
+            from_label
+        } else if let Some((w, h)) = parse_resolution_dims(max_value) {
+            resolution_rank_from_dims(w, h)
+        } else {
+            return Err("Invalid max_res format");
+        }
+    };
+    if requested_rank > max_rank {
+        Err("Resolution exceeds system limit")
+    } else {
+        Ok(())
+    }
 }
 
 async fn build_start_params(
@@ -202,6 +264,11 @@ async fn build_start_params(
     let sys_max_res = get_sys_val(pool, "max_res").await.and_then(|v| v.as_str().map(String::from)).unwrap_or("1920x1080".to_string());
     let sys_encoder = get_sys_val(pool, "video_encoder").await.and_then(|v| v.as_str().map(String::from)).unwrap_or("x264".to_string());
 
+    validate_max_bitrate(sys_max_bitrate).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_max_fps(sys_max_fps).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_resolution_value(&sys_max_res, false).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_encoder_id(&sys_encoder).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+
     let user_config = sqlx::query_as::<_, crate::api::user_config::UserConfig>("SELECT max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key FROM user_configs WHERE user_id = $1")
         .bind(user_id)
         .fetch_optional(pool)
@@ -211,6 +278,9 @@ async fn build_start_params(
     let bitrate = user_config.as_ref().and_then(|c| c.max_bitrate).unwrap_or(sys_max_bitrate);
     let fps = user_config.as_ref().and_then(|c| c.max_fps).unwrap_or(sys_max_fps).min(sys_max_fps);
     let resolution = user_config.as_ref().and_then(|c| c.resolution.clone()).unwrap_or(sys_max_res.clone());
+    validate_max_bitrate(bitrate).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_max_fps(fps).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
+    validate_resolution_value(&resolution, false).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
     let rtmp_url = user_config.as_ref().and_then(|c| c.rtmp_url.clone()).unwrap_or_default();
     let rtmp_key = user_config.as_ref().and_then(|c| c.rtmp_key.clone()).unwrap_or_default();
     let desktop_audio = user_config.as_ref().and_then(|c| c.desktop_audio.clone()).unwrap_or_default();
