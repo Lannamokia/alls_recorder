@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { Trash2, Edit2, FileVideo, Check, X, Download } from 'lucide-react';
 
@@ -18,25 +18,25 @@ export default function FileList() {
   const token = localStorage.getItem('token');
   const baseUrl = localStorage.getItem('backend_url') || 'http://localhost:3000';
 
-  const fetchFiles = async () => {
+  const fetchFiles = useCallback(async () => {
     setLoading(true);
     try {
       const res = await axios.get(`${baseUrl}/api/files`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setFiles(res.data);
-    } catch (err) {
-      console.error(err);
+    } catch (error) {
+      console.error(error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [baseUrl, token]);
 
   useEffect(() => {
     fetchFiles();
     const interval = setInterval(fetchFiles, 10000); // Auto refresh
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchFiles]);
 
   const handleDelete = async (id: string) => {
     if (!confirm('确定要删除此文件吗？')) return;

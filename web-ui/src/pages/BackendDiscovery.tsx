@@ -113,8 +113,8 @@ export default function BackendDiscovery() {
       const name = typeof data?.name === 'string' ? data.name : baseUrl;
       const initialized = Boolean(data?.initialized);
       addFound({ baseUrl, name, initialized });
-    } catch (e) {
-      void e;
+    } catch (error) {
+      console.error(error);
     } finally {
       clearTimeout(timer);
     }
@@ -132,7 +132,7 @@ export default function BackendDiscovery() {
       const info = { baseUrl, name, initialized };
       addFoundWithMark(info);
       return info;
-    } catch (e) {
+    } catch {
       return null;
     } finally {
       clearTimeout(timer);

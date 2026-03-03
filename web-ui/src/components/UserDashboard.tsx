@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import FileList from './FileList';
 import UserSettingsModal from './UserSettingsModal';
@@ -42,52 +42,52 @@ export default function UserDashboard() {
   const token = localStorage.getItem('token');
   const baseUrl = localStorage.getItem('backend_url') || 'http://localhost:3000';
 
-  const fetchStatus = async () => {
+  const fetchStatus = useCallback(async () => {
     try {
       const res = await axios.get(`${baseUrl}/api/recorder/status`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setIsRecording(res.data.recording);
       setTaskType(res.data.task_type || (res.data.recording ? 'record' : 'idle'));
-    } catch (err) {
-      console.error(err);
+    } catch (error) {
+      console.error(error);
     }
-  };
+  }, [baseUrl, token]);
 
-  const fetchActiveUsers = async () => {
+  const fetchActiveUsers = useCallback(async () => {
     try {
       const res = await axios.get(`${baseUrl}/api/recorder/active`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setActiveUsers(res.data);
-    } catch (err) {
-      console.error(err);
+    } catch (error) {
+      console.error(error);
     }
-  };
+  }, [baseUrl, token]);
 
-  const checkNotifications = async () => {
+  const checkNotifications = useCallback(async () => {
     try {
       const res = await axios.get(`${baseUrl}/api/recorder/notifications`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setNotification(res.data); // data is StopRequest or null
-    } catch (err) {
-      console.error(err);
+    } catch (error) {
+      console.error(error);
     }
-  };
+  }, [baseUrl, token]);
 
-  const checkAnnouncements = async () => {
+  const checkAnnouncements = useCallback(async () => {
     try {
       const res = await axios.get(`${baseUrl}/api/announcements/unread`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setAnnouncements(res.data);
-    } catch (err) {
-      console.error(err);
+    } catch (error) {
+      console.error(error);
     }
-  };
+  }, [baseUrl, token]);
 
-  const checkSentRequestStatus = async () => {
+  const checkSentRequestStatus = useCallback(async () => {
     if (!sentRequest || sentRequest.status === 'Accepted' || sentRequest.status === 'Denied') return;
     try {
         const res = await axios.get(`${baseUrl}/api/recorder/request-status?target_user_id=${sentRequest.targetId}`, {
@@ -105,11 +105,11 @@ export default function UserDashboard() {
                 setError('对方拒绝了您的停止请求');
             }
         }
-    } catch (err) {
+    } catch {
         // Request might be gone or error
         // If 404, maybe it was removed or didn't exist
     }
-  };
+  }, [baseUrl, token, sentRequest, setError, setStatusMsg]);
 
   useEffect(() => {
     fetchStatus();
@@ -125,7 +125,7 @@ export default function UserDashboard() {
     }, 2000); // Poll every 2s
 
     return () => clearInterval(interval);
-  }, [sentRequest]); // Add sentRequest dependency to update polling logic if needed
+  }, [checkAnnouncements, checkNotifications, checkSentRequestStatus, fetchActiveUsers, fetchStatus]);
 
   const handleRequestStop = async (targetUserId: string) => {
       if (!confirm('确定要请求对方停止录制吗？')) return;
@@ -135,8 +135,12 @@ export default function UserDashboard() {
           });
           setSentRequest({ targetId: targetUserId, status: 'Pending' });
           setStatusMsg('请求已发送，等待对方响应...');
-      } catch (err: any) {
-          setError(err.response?.data || '请求发送失败');
+      } catch (error) {
+          if (axios.isAxiosError(error)) {
+            setError(typeof error.response?.data === 'string' ? error.response?.data : '请求发送失败');
+          } else {
+            setError('请求发送失败');
+          }
       }
   };
 
@@ -151,9 +155,13 @@ export default function UserDashboard() {
       setIsRecording(true);
       setTaskType(mode);
       setStatusMsg(mode === 'record' ? '已开始录制' : '已开始推流');
-    } catch (err: any) {
-      console.error(err);
-      setError(err.response?.data || '启动失败');
+    } catch (error) {
+      console.error(error);
+      if (axios.isAxiosError(error)) {
+        setError(typeof error.response?.data === 'string' ? error.response?.data : '启动失败');
+      } else {
+        setError('启动失败');
+      }
     } finally {
       setLoading(false);
     }
@@ -170,9 +178,13 @@ export default function UserDashboard() {
       setIsRecording(false);
       setTaskType('idle');
       setStatusMsg('已停止');
-    } catch (err: any) {
-      console.error(err);
-      setError(err.response?.data || '停止失败');
+    } catch (error) {
+      console.error(error);
+      if (axios.isAxiosError(error)) {
+        setError(typeof error.response?.data === 'string' ? error.response?.data : '停止失败');
+      } else {
+        setError('停止失败');
+      }
     } finally {
       setLoading(false);
     }
@@ -192,9 +204,13 @@ export default function UserDashboard() {
         setIsRecording(false);
         setStatusMsg('已接受停止请求');
       }
-    } catch (err: any) {
-      console.error(err);
-      setError(err.response?.data || '响应失败');
+    } catch (error) {
+      console.error(error);
+      if (axios.isAxiosError(error)) {
+        setError(typeof error.response?.data === 'string' ? error.response?.data : '响应失败');
+      } else {
+        setError('响应失败');
+      }
     }
   };
 

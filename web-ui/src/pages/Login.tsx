@@ -58,10 +58,13 @@ export default function Login() {
 
       // Redirect
       navigate('/');
-    } catch (err: any) {
-      console.error(err);
-      // 改进错误信息显示
-      const errorMessage = err.response?.data || err.message || '认证失败';
+    } catch (error) {
+      console.error(error);
+      const errorMessage = axios.isAxiosError(error)
+        ? error.response?.data ?? error.message
+        : error instanceof Error
+          ? error.message
+          : '认证失败';
       setError(typeof errorMessage === 'string' ? errorMessage : JSON.stringify(errorMessage));
     }
   };
