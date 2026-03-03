@@ -31,6 +31,38 @@ std::atomic<long long> output_stop_code(0);
 std::mutex stop_mutex;
 std::string output_stop_error;
 
+constexpr int kMonitorMethodAuto = 0;
+constexpr int kMonitorMethodDxgi = 1;
+constexpr int kMonitorMethodWgc = 2;
+
+const char* monitor_method_name(int method) {
+    switch (method) {
+    case kMonitorMethodDxgi:
+        return "DXGI";
+    case kMonitorMethodWgc:
+        return "WGC";
+    case kMonitorMethodAuto:
+        return "AUTO";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+std::string infer_copy_path(int method, const std::string& encoder_id) {
+    const bool uses_tex = encoder_id.find("_tex") != std::string::npos;
+    const char* enc_path = uses_tex ? "gpu-texture" : "cpu-copy";
+    if (method == kMonitorMethodDxgi) {
+        return std::string("dxgi-dup -> gpu-texture -> ") + enc_path;
+    }
+    if (method == kMonitorMethodWgc) {
+        return std::string("wgc -> gpu-texture -> ") + enc_path;
+    }
+    if (method == kMonitorMethodAuto) {
+        return std::string("auto(dxgi|wgc) -> gpu-texture -> ") + enc_path;
+    }
+    return "unknown";
+}
+
 void set_stop_reason(int reason) {
     int expected = StopReasonNone;
     stop_reason.compare_exchange_strong(expected, reason);
@@ -449,6 +481,14 @@ int main(int argc, char *argv[]) {
     }
 
     if (monitor_source) {
+        obs_data_t* source_settings = obs_source_get_settings(monitor_source);
+        if (source_settings) {
+            int method = (int)obs_data_get_int(source_settings, "method");
+            std::cout << "Monitor capture method: " << monitor_method_name(method) << std::endl;
+            std::cout << "Monitor capture copy path: " << infer_copy_path(method, args.encoder) << std::endl;
+            obs_data_release(source_settings);
+        }
+
         obs_sceneitem_t* item = obs_scene_add(scene, monitor_source);
         
         // Ensure it fills the screen
