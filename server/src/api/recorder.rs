@@ -137,7 +137,10 @@ pub(crate) fn validate_device_id(id: &str) -> Result<(), &'static str> {
     if id.is_empty() {
         return Ok(());
     }
-    let forbidden_chars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '[', ']', '\\', '"', '\'', '\n', '\r'];
+    // Allow Windows device interface paths like \\?\DISPLAY#...#5&39135f38&...
+    // These contain backslashes, ampersands, question marks, and hash signs
+    // Only block characters that could enable shell injection
+    let forbidden_chars = ['|', ';', '$', '`', '>', '<', '(', ')', '[', ']', '"', '\'', '\n', '\r'];
     if id.chars().any(|c| forbidden_chars.contains(&c)) {
         return Err("Invalid characters in device ID");
     }

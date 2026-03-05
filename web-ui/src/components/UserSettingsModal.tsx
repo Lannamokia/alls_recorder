@@ -35,7 +35,7 @@ interface HardwareInfo {
   windows?: { title: string; exe: string; id: string }[];
 }
 
-const deviceForbiddenChars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '[', ']', '\\', '"', '\'', '\n', '\r'];
+const deviceForbiddenChars = ['|', ';', '$', '`', '>', '<', '(', ')', '[', ']', '"', '\'', '\n', '\r'];
 const rtmpUrlForbiddenChars = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '{', '}', '[', ']', '\\', '"', '\'', '\n', '\r'];
 const resolutionLabelSet = new Set(['4k', '2160p', '1080p', '720p', '480p']);
 

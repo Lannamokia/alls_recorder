@@ -18,6 +18,8 @@ pub struct HardwareInfo {
 pub struct Device {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub index: Option<i32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
