@@ -36,7 +36,7 @@ interface UserInfo {
   created_at: string;
 }
 
-const deviceForbiddenChars = /[&|;$`><()[\]\\'"\n\r]/;
+const deviceForbiddenChars = /[|;$`><()[\]'"\n\r]/;
 const resolutionLabelSet = new Set(['4k', '2160p', '1080p', '720p', '480p']);
 
 const validateNonNegativeNumber = (value: number, label: string) => {

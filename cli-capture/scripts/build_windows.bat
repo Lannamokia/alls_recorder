@@ -40,7 +40,7 @@ if exist "build" rmdir /s /q build
 mkdir build
 cd build
 
-cmake .. -A x64 -DENABLE_BROWSER=OFF -DENABLE_VST=OFF -DENABLE_SCRIPTING=OFF -DENABLE_UI=OFF -DENABLE_WEBSOCKET=OFF -DENABLE_AJA=OFF -DENABLE_DECKLINK=OFF -DENABLE_NEW_MPEGTS_OUTPUT=OFF -DCMAKE_TLS_VERIFY=0
+cmake .. -A x64 -DENABLE_BROWSER=OFF -DENABLE_VST=OFF -DENABLE_SCRIPTING=OFF -DENABLE_UI=OFF -DENABLE_WEBSOCKET=OFF -DENABLE_AJA=OFF -DENABLE_DECKLINK=OFF -DENABLE_NEW_MPEGTS_OUTPUT=OFF -DCMAKE_TLS_VERIFY=0 -DGPU_PRIORITY_VAL=7
 if %errorlevel% neq 0 exit /b 1
 
 cmake --build . --config RelWithDebInfo
@@ -64,5 +64,3 @@ mkdir "..\..\dist"
 xcopy /E /I /Y "rundir\RelWithDebInfo\*" "..\..\dist\" >nul
 
 popd
-
-if exist "%OBS_DIR%\" rmdir /s /q "%OBS_DIR%"

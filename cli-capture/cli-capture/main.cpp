@@ -6,8 +6,10 @@
 #include <util/dstr.h>
 #include <util/config-file.h>
 #include <windows.h>
+#include <mmsystem.h>
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")
+#pragma comment(lib, "winmm.lib")
 #include <iostream>
 #include <vector>
 #include <string>
@@ -19,6 +21,54 @@
 #include <iomanip>
 #include <algorithm>
 #include <cctype>
+#include <queue>
+
+// UI task queue for libobs main thread callbacks
+struct UiTask {
+    obs_task_t task;
+    void *param;
+    bool wait;
+    HANDLE event; // signaled when wait==true and task is done
+};
+
+static std::mutex ui_task_mutex;
+static std::queue<UiTask> ui_task_queue;
+
+static void cli_ui_task_handler(obs_task_t task, void *param, bool wait)
+{
+    if (wait) {
+        HANDLE ev = CreateEventA(NULL, TRUE, FALSE, NULL);
+        {
+            std::lock_guard<std::mutex> lock(ui_task_mutex);
+            ui_task_queue.push({task, param, true, ev});
+        }
+        WaitForSingleObject(ev, INFINITE);
+        CloseHandle(ev);
+    } else {
+        std::lock_guard<std::mutex> lock(ui_task_mutex);
+        ui_task_queue.push({task, param, false, NULL});
+    }
+}
+
+static void process_ui_tasks()
+{
+    // Drain tasks without holding the lock during execution,
+    // to avoid deadlock if a task re-enters cli_ui_task_handler.
+    for (;;) {
+        UiTask t;
+        {
+            std::lock_guard<std::mutex> lock(ui_task_mutex);
+            if (ui_task_queue.empty())
+                break;
+            t = ui_task_queue.front();
+            ui_task_queue.pop();
+        }
+        t.task(t.param);
+        if (t.wait && t.event) {
+            SetEvent(t.event);
+        }
+    }
+}
 
 // Global flag for interrupt
 enum StopReason {
@@ -42,6 +92,16 @@ bool video_reset_done = false;
 constexpr int kMonitorMethodAuto = 0;
 constexpr int kMonitorMethodDxgi = 1;
 constexpr int kMonitorMethodWgc = 2;
+
+struct TimePeriodGuard {
+    explicit TimePeriodGuard(UINT period) : period(period) {
+        timeBeginPeriod(period);
+    }
+    ~TimePeriodGuard() {
+        timeEndPeriod(period);
+    }
+    UINT period;
+};
 
 const char* monitor_method_name(int method) {
     switch (method) {
@@ -89,6 +149,23 @@ bool reset_video_once(obs_video_info* ovi, bool quiet) {
         std::cerr << "Video reset successful." << std::endl;
     }
     video_reset_done = true;
+    return true;
+}
+
+bool reset_video(obs_video_info* ovi, bool quiet) {
+    if (!quiet) {
+        std::cerr << "Resetting video..." << std::endl;
+    }
+    int ret = obs_reset_video(ovi);
+    if (ret != OBS_VIDEO_SUCCESS) {
+        if (!quiet) {
+            std::cerr << "Failed to reset video, error code: " << ret << std::endl;
+        }
+        return false;
+    }
+    if (!quiet) {
+        std::cerr << "Video reset successful." << std::endl;
+    }
     return true;
 }
 
@@ -151,7 +228,9 @@ void output_stop_cb(void *param, calldata_t *data) {
 struct Args {
     bool scan = false;
     bool scan_windows = false;
+    bool test = false;
     int monitor_idx = 0;
+    std::string monitor_id; // device_id string, takes priority over monitor_idx
     int method = kMonitorMethodAuto;
     std::string audio_desktop_id;
     std::string audio_mic_id;
@@ -177,7 +256,8 @@ struct WindowInfo {
 struct MonitorInfo {
     int index = 0;
     RECT rect = {};
-    std::string device;
+    std::string device;      // szDevice e.g. "\\\\.\\DISPLAY1"
+    std::string device_id;   // DeviceID from EnumDisplayDevices (interface path)
     uint32_t width = 0;
     uint32_t height = 0;
     int rotation = 0;
@@ -263,6 +343,17 @@ BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC hdcMonitor, LPRECT lprcMoni
     info.device = mi.szDevice;
     info.primary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
 
+    // Get device interface ID (needed by duplicator-monitor-capture)
+    DISPLAY_DEVICEA dd;
+    memset(&dd, 0, sizeof(dd));
+    dd.cb = sizeof(dd);
+    if (EnumDisplayDevicesA(mi.szDevice, 0, &dd, EDD_GET_DEVICE_INTERFACE_NAME)) {
+        info.device_id = dd.DeviceID;
+    } else {
+        // Fallback to szDevice (enum_monitor_fallback in duplicator will match this)
+        info.device_id = mi.szDevice;
+    }
+
     DEVMODEA dm;
     memset(&dm, 0, sizeof(dm));
     dm.dmSize = sizeof(dm);
@@ -320,8 +411,21 @@ void print_json_array(const std::string& key, const std::vector<std::pair<std::s
 // Function to list screens
 void list_screens() {
     auto monitors = get_monitors();
-    std::vector<std::pair<std::string, std::string>> monitor_list;
-    for (const auto& m : monitors) {
+    auto escape_json = [](const std::string& s) {
+        std::string out;
+        for (char c : s) {
+            if (c == '"')
+                out += "\\\"";
+            else if (c == '\\')
+                out += "\\\\";
+            else
+                out += c;
+        }
+        return out;
+    };
+    std::cout << "  \"screens\": [\n";
+    for (size_t i = 0; i < monitors.size(); ++i) {
+        const auto& m = monitors[i];
         std::string name = "Display " + std::to_string(m.index + 1) + ": " +
                            std::to_string(m.width) + "x" + std::to_string(m.height) +
                            " @ " + std::to_string(m.rect.left) + "," + std::to_string(m.rect.top);
@@ -331,9 +435,13 @@ void list_screens() {
         if (m.rotation != 0) {
             name += " rot=" + std::to_string(m.rotation);
         }
-        monitor_list.push_back({std::to_string(m.index), name});
+        std::cout << "    { \"id\": \"" << escape_json(m.device_id)
+                  << "\", \"index\": " << m.index
+                  << ", \"name\": \"" << escape_json(name) << "\" }";
+        if (i < monitors.size() - 1) std::cout << ",";
+        std::cout << "\n";
     }
-    print_json_array("screens", monitor_list);
+    std::cout << "  ],\n";
 }
 
 void list_windows() {
@@ -414,10 +522,19 @@ void parse_args(int argc, char* argv[], Args& args) {
         std::string arg = argv[i];
         if (arg == "--scan") {
             args.scan = true;
+        } else if (arg == "--test") {
+            args.test = true;
         } else if (arg == "--scan-windows") {
             args.scan_windows = true;
         } else if (arg == "--monitor" && i + 1 < argc) {
-            args.monitor_idx = std::stoi(argv[++i]);
+            std::string val = argv[++i];
+            // If it's a pure integer, treat as index; otherwise treat as device_id
+            bool is_int = !val.empty() && std::all_of(val.begin(), val.end(), ::isdigit);
+            if (is_int) {
+                args.monitor_idx = std::stoi(val);
+            } else {
+                args.monitor_id = val;
+            }
         } else if (arg == "--desktop-audio" && i + 1 < argc) {
             args.audio_desktop_id = argv[++i];
         } else if (arg == "--mic-audio" && i + 1 < argc) {
@@ -465,10 +582,37 @@ void parse_args(int argc, char* argv[], Args& args) {
 }
 
 int main(int argc, char *argv[]) {
+    TimePeriodGuard time_period_guard(1);
     // Set console output to UTF-8 to fix mojibake
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
     SetConsoleCtrlHandler(console_handler, TRUE);
+
+    // Enable SE_INC_BASE_PRIORITY_NAME privilege for GPU priority
+    {
+        const DWORD flags = TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY;
+        TOKEN_PRIVILEGES tp;
+        HANDLE token;
+        LUID val;
+        if (OpenProcessToken(GetCurrentProcess(), flags, &token)) {
+            if (LookupPrivilegeValue(NULL, SE_INC_BASE_PRIORITY_NAME, &val)) {
+                tp.PrivilegeCount = 1;
+                tp.Privileges[0].Luid = val;
+                tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+                AdjustTokenPrivileges(token, false, &tp, sizeof(tp), NULL, NULL);
+            }
+            CloseHandle(token);
+        }
+    }
+
+    // Initialize Realtime Work Queue for MMCSS thread scheduling
+    HMODULE hRtwq = LoadLibraryW(L"RTWorkQ.dll");
+    if (hRtwq) {
+        typedef HRESULT(STDAPICALLTYPE * PFN_RtwqStartup)();
+        auto func = (PFN_RtwqStartup)GetProcAddress(hRtwq, "RtwqStartup");
+        if (func) func();
+    }
+
     HMODULE user32 = GetModuleHandleA("user32.dll");
     if (user32) {
         using SetProcessDpiAwarenessContext_t = BOOL(WINAPI *)(HANDLE);
@@ -502,6 +646,8 @@ int main(int argc, char *argv[]) {
         }
         return -1;
     }
+
+    obs_set_ui_task_handler(cli_ui_task_handler);
     
     // Set current directory to executable directory to find data files
     char exe_path[MAX_PATH];
@@ -521,36 +667,28 @@ int main(int argc, char *argv[]) {
         obs_log_loaded_modules();
     }
 
-    // Load modules
-    if (!quiet_scan) {
-        std::cerr << "Loading modules..." << std::endl;
-    }
-    obs_load_all_modules();
-    if (!quiet_scan) {
-        std::cerr << "Post-loading modules..." << std::endl;
-    }
-    obs_post_load_modules();
-
-    // Need to initialize video context even for scanning some properties properly
-    // Use a dummy resolution
-    obs_video_info ovi;
-    memset(&ovi, 0, sizeof(obs_video_info));
-    ovi.adapter = 0;
-    ovi.base_width = 1920;
-    ovi.base_height = 1080;
-    ovi.output_width = 1920;
-    ovi.output_height = 1080;
-    ovi.fps_num = 30;
-    ovi.fps_den = 1;
-    ovi.graphics_module = "libobs-d3d11";
-    ovi.output_format = VIDEO_FORMAT_NV12;
-    ovi.colorspace = VIDEO_CS_709;
-    ovi.range = VIDEO_RANGE_PARTIAL;
-    ovi.gpu_conversion = true;
-    ovi.scale_type = OBS_SCALE_BICUBIC;
-    
-
+    // ---- Scan mode: load modules first (needs video for some properties) ----
     if (args.scan) {
+        std::cerr << "Loading modules..." << std::endl;
+        obs_load_all_modules();
+        obs_post_load_modules();
+
+        obs_video_info ovi;
+        memset(&ovi, 0, sizeof(obs_video_info));
+        ovi.adapter = 0;
+        ovi.base_width = 1920;
+        ovi.base_height = 1080;
+        ovi.output_width = 1920;
+        ovi.output_height = 1080;
+        ovi.fps_num = 30;
+        ovi.fps_den = 1;
+        ovi.graphics_module = "libobs-d3d11";
+        ovi.output_format = VIDEO_FORMAT_NV12;
+        ovi.colorspace = VIDEO_CS_709;
+        ovi.range = VIDEO_RANGE_PARTIAL;
+        ovi.gpu_conversion = true;
+        ovi.scale_type = OBS_SCALE_BICUBIC;
+
         if (!reset_video_once(&ovi, quiet_scan)) {
             obs_shutdown();
             return -1;
@@ -565,37 +703,75 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    // Capture Mode
+    // ===== Capture Mode =====
+    // OBS Studio init order: obs_startup -> audio -> video -> load_modules
+    const int user_set_width = args.width;
+    const int user_set_height = args.height;
+
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 #ifdef SIGBREAK
     signal(SIGBREAK, signal_handler);
 #endif
 
-    // Auto-detect resolution if not provided
-    if (args.width == 0 || args.height == 0) {
-        auto monitors = get_monitors();
-        if (args.monitor_idx < (int)monitors.size()) {
-            const auto& m = monitors[args.monitor_idx];
-            args.width = (int)m.width;
-            args.height = (int)m.height;
-            args.rotation = m.rotation;
-            std::cout << "Auto-detected resolution: " << args.width << "x" << args.height << std::endl;
-        } else {
-            args.width = 1920;
-            args.height = 1080;
-            args.rotation = 0;
-            std::cerr << "Monitor index out of range, using default 1920x1080" << std::endl;
+    // 1. Reset Audio first (matches OBS Studio order)
+    {
+        obs_audio_info oai;
+        memset(&oai, 0, sizeof(obs_audio_info));
+        oai.samples_per_sec = 48000;
+        oai.speakers = SPEAKERS_STEREO;
+        if (!obs_reset_audio(&oai)) {
+            std::cerr << "Failed to reset audio" << std::endl;
+            obs_shutdown();
+            return -1;
         }
     }
 
-    // Reset Video with correct resolution
-    args.width &= 0xFFFFFFFC;
-    args.height &= 0xFFFFFFFE;
-    ovi.base_width = args.width;
-    ovi.base_height = args.height;
-    ovi.output_width = args.width;
-    ovi.output_height = args.height;
+    // 2. Reset Video (before loading modules - matches OBS Studio order)
+    // Find the target monitor (by device_id string or index)
+    auto monitors = get_monitors();
+    const MonitorInfo* target_monitor = nullptr;
+    if (!args.monitor_id.empty()) {
+        for (const auto& m : monitors) {
+            if (m.device_id == args.monitor_id) {
+                target_monitor = &m;
+                break;
+            }
+        }
+        if (!target_monitor) {
+            std::cerr << "Warning: monitor_id not found, falling back to index " << args.monitor_idx << std::endl;
+        }
+    }
+    if (!target_monitor && args.monitor_idx >= 0 && args.monitor_idx < (int)monitors.size()) {
+        target_monitor = &monitors[args.monitor_idx];
+    }
+
+    // Determine base (canvas) resolution from monitor info
+    int base_width = 1920;
+    int base_height = 1080;
+    if (!args.test && args.window_id.empty() && target_monitor) {
+        if (target_monitor->width > 0 && target_monitor->height > 0) {
+            base_width = (int)target_monitor->width;
+            base_height = (int)target_monitor->height;
+            std::cout << "Auto-detected monitor resolution: " << base_width << "x" << base_height << std::endl;
+        }
+    }
+    base_width &= 0xFFFFFFFC;
+    base_height &= 0xFFFFFFFE;
+
+    // output = user-requested encode resolution, or base if not specified
+    int out_width = user_set_width ? (user_set_width & 0xFFFFFFFC) : base_width;
+    int out_height = user_set_height ? (user_set_height & 0xFFFFFFFE) : base_height;
+
+    obs_video_info ovi;
+    memset(&ovi, 0, sizeof(obs_video_info));
+    ovi.adapter = 0;
+    ovi.graphics_module = "libobs-d3d11";
+    ovi.fps_den = 1;
+    ovi.base_width = base_width;
+    ovi.base_height = base_height;
+    ovi.output_width = out_width;
+    ovi.output_height = out_height;
     ovi.fps_num = args.fps;
     ovi.output_format = VIDEO_FORMAT_NV12;
     ovi.colorspace = VIDEO_CS_709;
@@ -603,29 +779,26 @@ int main(int argc, char *argv[]) {
     ovi.gpu_conversion = true;
     ovi.scale_type = OBS_SCALE_BILINEAR;
 
-    if (!reset_video_once(&ovi, quiet_scan)) {
+    std::cout << "Canvas: " << ovi.base_width << "x" << ovi.base_height
+              << ", Output: " << ovi.output_width << "x" << ovi.output_height << std::endl;
+
+    if (!reset_video(&ovi, quiet_scan)) {
         std::cerr << "Failed to reset video" << std::endl;
         obs_shutdown();
         return -1;
     }
 
-    // Reset Audio
-    obs_audio_info oai;
-    memset(&oai, 0, sizeof(obs_audio_info));
-    oai.samples_per_sec = 48000;
-    oai.speakers = SPEAKERS_STEREO;
-    if (!obs_reset_audio(&oai)) {
-        std::cerr << "Failed to reset audio" << std::endl;
-        obs_shutdown();
-        return -1;
-    }
+    // 3. Load modules AFTER video init (matches OBS Studio order)
+    // This is critical: modules like win-capture need the graphics context
+    // to be fully initialized before they load.
+    std::cerr << "Loading modules..." << std::endl;
+    obs_load_all_modules();
+    std::cerr << "Post-loading modules..." << std::endl;
+    obs_post_load_modules();
 
-    // Create Scene
-    obs_scene_t* scene = obs_scene_create("Main Scene");
-    
     // Create Monitor Source
     obs_source_t* monitor_source = nullptr;
-    if (!args.window_id.empty()) {
+    if (!args.test && !args.window_id.empty()) {
         obs_data_t* s = obs_data_create();
         obs_data_set_string(s, "window", args.window_id.c_str());
         obs_data_set_int(s, "capture_mode", 1);
@@ -634,19 +807,16 @@ int main(int argc, char *argv[]) {
         monitor_source = obs_source_create("game_capture", "Game Capture", s, NULL);
         obs_data_release(s);
     } else {
+        // Use the device_id from the target monitor found earlier
+        std::string monitor_device_id;
+        if (target_monitor) {
+            monitor_device_id = target_monitor->device_id;
+        }
         obs_data_t* monitor_settings = obs_data_create();
-        obs_data_set_int(monitor_settings, "monitor", args.monitor_idx);
+        obs_data_set_string(monitor_settings, "monitor_id", monitor_device_id.c_str());
         obs_data_set_int(monitor_settings, "method", args.method);
         monitor_source = obs_source_create("monitor_capture", "Screen Capture", monitor_settings, NULL);
         obs_data_release(monitor_settings);
-    }
-
-    uint32_t canvas_width = args.width;
-    uint32_t canvas_height = args.height;
-    obs_video_info active_ovi;
-    if (obs_get_video_info(&active_ovi)) {
-        canvas_width = active_ovi.base_width;
-        canvas_height = active_ovi.base_height;
     }
 
     if (monitor_source) {
@@ -657,26 +827,24 @@ int main(int argc, char *argv[]) {
             std::cout << "Monitor capture copy path: " << infer_copy_path(method, args.encoder) << std::endl;
             obs_data_release(source_settings);
         }
-
-        obs_sceneitem_t* item = obs_scene_add(scene, monitor_source);
-        
-        // Ensure it fills the screen
-        obs_transform_info transform;
-        memset(&transform, 0, sizeof(transform));
-        obs_sceneitem_get_info2(item, &transform);
-        transform.bounds_type = OBS_BOUNDS_SCALE_INNER;
-        transform.bounds.x = (float)canvas_width;
-        transform.bounds.y = (float)canvas_height;
-        transform.alignment = OBS_ALIGN_CENTER;
-        transform.bounds_alignment = OBS_ALIGN_CENTER;
-        transform.pos.x = (float)canvas_width * 0.5f;
-        transform.pos.y = (float)canvas_height * 0.5f;
-        transform.rot = (float)args.rotation;
-        obs_sceneitem_set_info2(item, &transform);
-        
-        obs_source_release(monitor_source);
     } else {
         std::cerr << "Failed to create monitor source" << std::endl;
+    }
+
+    // Create Scene
+    obs_scene_t* scene = obs_scene_create("Main Scene");
+
+    if (monitor_source) {
+        obs_scene_add(scene, monitor_source);
+        obs_source_release(monitor_source);
+    }
+
+    if (args.test) {
+        std::cout << "Monitor source created. Test mode, output not started." << std::endl;
+        clear_output_sources();
+        obs_scene_release(scene);
+        obs_shutdown();
+        return 0;
     }
 
     obs_source_t* scene_source = obs_scene_get_source(scene);
@@ -761,6 +929,7 @@ int main(int argc, char *argv[]) {
     obs_data_t* v_settings = obs_data_create();
     const char* encoder_id = obs_encoder_get_id(v_encoder);
     if (encoder_id && strstr(encoder_id, "nvenc")) {
+        obs_data_set_bool(v_settings, "texture", true);
         obs_data_set_string(v_settings, "preset", "p3");
         obs_data_set_string(v_settings, "preset2", "p3");
         obs_data_set_string(v_settings, "multipass", "disabled");
@@ -789,11 +958,11 @@ int main(int argc, char *argv[]) {
     obs_encoder_update(a_encoder, a_settings);
     obs_data_release(a_settings);
 
-    obs_encoder_set_video(v_encoder, obs_get_video());
-    obs_encoder_set_audio(a_encoder, obs_get_audio());
     obs_encoder_set_preferred_video_format(v_encoder, VIDEO_FORMAT_NV12);
     obs_encoder_set_preferred_color_space(v_encoder, VIDEO_CS_709);
     obs_encoder_set_preferred_range(v_encoder, VIDEO_RANGE_PARTIAL);
+    obs_encoder_set_video(v_encoder, obs_get_video());
+    obs_encoder_set_audio(a_encoder, obs_get_audio());
 
     obs_output_set_video_encoder(output, v_encoder);
     obs_output_set_audio_encoder(output, a_encoder, 0);
@@ -821,7 +990,8 @@ int main(int argc, char *argv[]) {
     std::cout << "Press Ctrl+C to stop." << std::endl;
 
     while (keep_running) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        process_ui_tasks();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     std::cout << "Stopping..." << std::endl;
@@ -864,5 +1034,14 @@ int main(int argc, char *argv[]) {
     }
     
     obs_shutdown();
+
+    // Shutdown Realtime Work Queue
+    if (hRtwq) {
+        typedef HRESULT(STDAPICALLTYPE * PFN_RtwqShutdown)();
+        auto func = (PFN_RtwqShutdown)GetProcAddress(hRtwq, "RtwqShutdown");
+        if (func) func();
+        FreeLibrary(hRtwq);
+    }
+
     return 0;
 }
