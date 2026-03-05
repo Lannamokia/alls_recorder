@@ -153,9 +153,9 @@ async fn setup_db(
         }
     };
 
-    // Run migrations
-    if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to run migrations: {}", e)).into_response();
+    // Run idempotent schema initialization
+    if let Err(e) = crate::db::ensure_schema(&pool).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to initialize schema: {}", e)).into_response();
     }
 
     // Store pool in state
