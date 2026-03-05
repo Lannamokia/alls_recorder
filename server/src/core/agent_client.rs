@@ -56,6 +56,7 @@ impl AgentClient {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn scan_hardware(&self, cli_path: String) -> Result<String> {
         self.scan_hardware_with_args(cli_path, vec!["--scan".to_string()]).await
     }

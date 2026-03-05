@@ -1,3 +1,0 @@
-ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS capture_mode VARCHAR(20);
-ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS capture_method VARCHAR(20);
-ALTER TABLE user_configs ADD COLUMN IF NOT EXISTS window_id VARCHAR(512);
