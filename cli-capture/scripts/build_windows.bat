@@ -4,9 +4,23 @@ setlocal enabledelayedexpansion
 set "ROOT=%~dp0.."
 set "OBS_DIR=%ROOT%\obs-studio"
 
-if not exist "%OBS_DIR%\" (
-  git clone https://github.com/obsproject/obs-studio.git "%OBS_DIR%"
+rem 固定 obs-studio 版本：patches\0001-obs-build-flags.patch 是针对该 tag 生成的。
+rem 跟随默认分支会在上游改动 CMakeLists.txt / plugins\CMakeLists.txt 后静默失配，
+rem 表现为 check_obs_browser() 没被注释掉，CMake 报
+rem "Required submodule 'obs-browser' not available"。
+rem 升级 OBS 时：把 OBS_REF 换成新 tag，检出新版本后按同样意图改这两个文件，
+rem 再执行 git diff > patches\0001-obs-build-flags.patch 重新生成补丁。
+set "OBS_REF=32.1.0-rc3"
+
+rem 注意：cmd 在**双层嵌套**的 if 块里执行 exit /b 会丢掉退出码，
+rem 所以这里的错误检查都写成单层，不要往 if 里再套 if。
+if exist "%OBS_DIR%\" goto :obs_ready
+git clone --branch %OBS_REF% https://github.com/obsproject/obs-studio.git "%OBS_DIR%"
+if errorlevel 1 (
+  echo Error: failed to clone obs-studio.
+  exit /b 1
 )
+:obs_ready
 
 if exist "%OBS_DIR%\cli-capture" (
   rmdir /s /q "%OBS_DIR%\cli-capture"
@@ -15,10 +29,23 @@ mkdir "%OBS_DIR%\cli-capture"
 xcopy /E /I /Y "%ROOT%\cli-capture\*" "%OBS_DIR%\cli-capture\" >nul
 
 pushd "%OBS_DIR%"
-git apply --reverse --check "%ROOT%\patches\0001-obs-build-flags.patch" >nul 2>&1
-if %errorlevel% neq 0 (
-  git apply "%ROOT%\patches\0001-obs-build-flags.patch"
+for /f "delims=" %%i in ('git describe --tags --exact-match 2^>nul') do set "OBS_HEAD=%%i"
+if not "%OBS_HEAD%"=="%OBS_REF%" (
+  echo Error: obs-studio is at "%OBS_HEAD%", but the patch targets "%OBS_REF%".
+  echo        Run: git -C "%OBS_DIR%" checkout %OBS_REF%
+  popd
+  exit /b 1
 )
+set "PATCH_MISSING=0"
+git apply --reverse --check "%ROOT%\patches\0001-obs-build-flags.patch" >nul 2>&1
+if errorlevel 1 set "PATCH_MISSING=1"
+if "%PATCH_MISSING%"=="1" git apply "%ROOT%\patches\0001-obs-build-flags.patch"
+if errorlevel 1 (
+  echo Error: failed to apply patches\0001-obs-build-flags.patch - obs-studio version mismatch?
+  popd
+  exit /b 1
+)
+if "%PATCH_MISSING%"=="1" echo applied obs-studio patch
 
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if exist "%VSWHERE%" (
