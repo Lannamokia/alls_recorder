@@ -2,6 +2,8 @@
 
 基于 `cli-capture` 的录制/推流管理平台，提供后端服务、前端管理界面与采集 CLI 统一协作的完整方案。
 
+> 本项目是面向 **SEGA Amusement Linkage Live System（ALLS）** 的专用软件：目标平台即 ALLS 所基于的 Windows 10 1809，不考虑任何非 Windows 甚至非预期 Windows 版本的兼容性，相应地也不受理这类 issue 与 PR。
+
 ## 模块组成
 
 - `server/`：Rust 后端服务（Axum + SQLx），负责认证、设备探测、录制/推流任务调度、文件管理与系统配置；同时内置托管前端产物。
@@ -12,7 +14,7 @@
 
 ## 运行环境
 
-- Windows 10/11 x64 —— 采集端（OBS + win-capture）仅支持 Windows，服务模式与会话内拉起也是 Windows 专用实现
+- Windows 10 1809 —— 目标平台是 SEGA ALLS 所基于的 Windows 10 1809；采集端（OBS + win-capture）、服务模式与会话内拉起都是 Windows 专用实现，本项目不承诺其它 Windows 版本，也不支持非 Windows 环境
 - Rust（stable，含 `cargo`）
 - Node.js（含 `npm`）—— 仅构建/开发前端时需要
 - PostgreSQL —— **可选**；不配置时使用内置 SQLite，单机零配置即可运行
@@ -310,7 +312,9 @@ scripts\build_windows.bat
 
 ### 可以在 Linux 上运行吗？
 
-服务端核心逻辑与平台无关，但服务模式、会话内拉起、录制链路都依赖 Windows；`cli-capture` 只能在 Windows 上构建运行。本项目目标平台是 Windows x64，未在 Linux 上验证。
+你看看项目名开头四个字母呢。
+
+这是个专为 **SEGA Amusement Linkage Live System（ALLS）** 而做的软件，ALLS 基于 Windows 10 1809 打造：不考虑非 Windows 乃至非预期 Windows 版本的兼容性，这类 issue 与 PR 一律不受理。
 
 ### 如何备份数据？
 
