@@ -85,6 +85,24 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // 处理可选的 agent 自启计划任务安装（默认不再随服务安装创建，
+    // 采集进程改由服务通过 CreateProcessAsUser 以用户身份直接拉起）
+    if std::env::args().any(|arg| arg == "--install-agent") {
+        #[cfg(windows)]
+        {
+            if !is_elevated()? {
+                println!("Requesting administrator privileges...");
+                return elevate_and_run("--install-agent");
+            }
+            return install_agent_task();
+        }
+        #[cfg(not(windows))]
+        {
+            eprintln!("Agent installation is only supported on Windows");
+            return Err(anyhow::anyhow!("Unsupported platform"));
+        }
+    }
+
     if cfg!(windows) && is_service_mode() {
         #[cfg(windows)]
         return run_as_service();
@@ -113,12 +131,48 @@ fn init_tracing() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         dotenvy::dotenv().ok();
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::new(
-                std::env::var("RUST_LOG").unwrap_or_else(|_| "server=debug,tower_http=debug".into()),
-            ))
-            .with(tracing_subscriber::fmt::layer())
-            .init();
+        let env_filter = tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "server=debug,tower_http=debug".into()),
+        );
+
+        // 服务模式（或显式 ALLS_LOG_FILE=1，供 NSSM 等托管场景）写滚动日志文件；
+        // 服务进程没有控制台，stdout 会被丢弃，文件日志是唯一的错误现场记录。
+        let log_to_file = is_service_mode()
+            || std::env::var("ALLS_LOG_FILE").map(|v| v == "1").unwrap_or(false);
+        if log_to_file {
+            // 服务模式没有控制台，stdout 会被丢弃：改写滚动日志文件，
+            // 并启动时清理 7 天前的旧日志。
+            let log_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("logs")))
+                .unwrap_or_else(|| std::path::PathBuf::from("logs"));
+            if let Err(e) = std::fs::create_dir_all(&log_dir) {
+                eprintln!("Failed to create log directory {}: {}", log_dir.display(), e);
+            }
+            cleanup_old_logs(&log_dir, 7);
+
+            let file_appender = tracing_appender::rolling::daily(&log_dir, "server.log");
+            let (writer, guard) = tracing_appender::non_blocking(file_appender);
+            // WorkerGuard 必须在整个进程生命周期存活（drop 时才 flush 残余），挂到静态变量上
+            let _ = LOG_GUARD.set(std::sync::Mutex::new(guard));
+
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_subscriber::fmt::layer().with_writer(writer).with_ansi(false))
+                .init();
+        } else {
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_subscriber::fmt::layer())
+                .init();
+        }
+
+        // panic 也进日志（服务模式下这是唯一的错误现场记录手段）
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            tracing::error!("panic occurred: {}", info);
+            default_hook(info);
+        }));
     });
 }
 
@@ -190,8 +244,7 @@ fn default_sqlite_url() -> String {
 }
 
 fn build_app(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/", get(root))
+    let api_router = Router::new()
         .nest("/api", api::setup::router())
         .nest("/api/auth", api::auth::router())
         .nest("/api/discovery", api::discovery::router())
@@ -202,10 +255,62 @@ fn build_app(state: Arc<AppState>) -> Router {
         .nest("/api/settings", api::settings::router())
         .nest("/api/user", api::user_config::router())
         .nest("/api/users", api::users::router())
-        .nest("/api/service", api::service::router())
+        .nest("/api/service", api::service::router());
+
+    let app = api_router
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
-        .with_state(state)
+        .with_state(state);
+
+    // 内置 web-ui：优先在可执行文件旁的 web-ui 目录查找，
+    // 其次当前工作目录（cargo run 场景）。存在则作为 SPA 托管，
+    // 所有未匹配路径回退到 index.html；不存在则保留纯 API 模式。
+    if let Some(webui_dir) = find_webui_dir() {
+        let index_path = webui_dir.join("index.html");
+        tracing::info!("serving embedded web-ui from {}", webui_dir.display());
+        let serve_dir = tower_http::services::ServeDir::new(&webui_dir)
+            // 用 fallback（而非 not_found_service，后者会强制 404 状态码），
+            // 让未匹配的 SPA 路由以 200 返回 index.html
+            .fallback(tower_http::services::ServeFile::new(index_path));
+        app.fallback_service(axum::routing::any({
+            let serve_dir = serve_dir;
+            move |req: axum::extract::Request| {
+                let serve_dir = serve_dir.clone();
+                async move {
+                    use axum::response::IntoResponse;
+                    if req.uri().path().starts_with("/api/") {
+                        return axum::http::StatusCode::NOT_FOUND.into_response();
+                    }
+                    use tower::ServiceExt;
+                    match serve_dir.oneshot(req).await {
+                        Ok(resp) => resp.into_response(),
+                        Err(_) => axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                    }
+                }
+            }
+        }))
+    } else {
+        tracing::warn!("web-ui directory not found next to executable; running in API-only mode");
+        app.route("/", get(root))
+    }
+}
+
+fn find_webui_dir() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("web-ui"));
+            if let Some(parent) = dir.parent() {
+                candidates.push(parent.join("web-ui"));
+            }
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("web-ui"));
+    }
+    candidates
+        .into_iter()
+        .find(|p| p.join("index.html").is_file())
 }
 
 async fn run_server<F>(shutdown: F) -> anyhow::Result<()>
@@ -452,6 +557,27 @@ fn install_service() -> anyhow::Result<()> {
     fs::write(&agent_config_path, serde_json::to_string_pretty(&agent_config)?)?;
     println!("✓ Agent configuration created at: {}", agent_config_path.display());
 
+    println!("\nService installation completed!");
+    println!("The service now spawns capture processes directly as the active console user");
+    println!("(no ONLOGON scheduled task is created).");
+    println!("To start the service, run: sc start {}", SERVICE_NAME);
+    println!("To stop the service, run: sc stop {}", SERVICE_NAME);
+    println!("To uninstall the service, run: server.exe --uninstall-service");
+    println!("(Optional) To install the legacy user-mode agent autostart task, run: server.exe --install-agent");
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn install_agent_task() -> anyhow::Result<()> {
+    use std::process::Command;
+    use std::env;
+
+    println!("Installing legacy agent autostart scheduled task...");
+
+    let exe_path = env::current_exe()?;
+    let exe_path_str = exe_path.to_string_lossy();
+
     let output = Command::new("schtasks")
         .args([
             "/Create",
@@ -471,13 +597,9 @@ fn install_service() -> anyhow::Result<()> {
     if output.status.success() {
         println!("✓ Agent scheduled task created");
     } else {
-        eprintln!("Warning: Failed to create agent scheduled task: {}", String::from_utf8_lossy(&output.stderr));
+        eprintln!("Failed to create agent scheduled task: {}", String::from_utf8_lossy(&output.stderr));
+        return Err(anyhow::anyhow!("Agent scheduled task creation failed"));
     }
-
-    println!("\nService installation completed!");
-    println!("To start the service, run: sc start {}", SERVICE_NAME);
-    println!("To stop the service, run: sc stop {}", SERVICE_NAME);
-    println!("To uninstall the service, run: server.exe --uninstall-service");
 
     Ok(())
 }

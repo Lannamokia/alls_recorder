@@ -49,6 +49,16 @@ function Build-Server {
             New-Item -ItemType Directory -Path $ServerOut | Out-Null
         }
         Copy-Item (Join-Path $Root "server\target\release\server.exe") -Destination (Join-Path $ServerOut "server.exe") -Force
+        # 若前端已有构建产物，一并内置进服务端目录（托管 dist\server\web-ui）
+        $WebUiDist = Join-Path $Root "web-ui\dist"
+        if (Test-Path (Join-Path $WebUiDist "index.html")) {
+            $EmbeddedOut = Join-Path $ServerOut "web-ui"
+            if (-not (Test-Path $EmbeddedOut)) {
+                New-Item -ItemType Directory -Path $EmbeddedOut | Out-Null
+            }
+            Copy-Item (Join-Path $WebUiDist "*") -Destination $EmbeddedOut -Recurse -Force
+            Write-Host "Embedded web-ui into server directory" -ForegroundColor Green
+        }
         Write-Host "Server build succeeded" -ForegroundColor Green
     } finally {
         Pop-Location
@@ -68,6 +78,12 @@ function Build-WebUI {
             New-Item -ItemType Directory -Path $WebOut | Out-Null
         }
         Copy-Item (Join-Path $Root "web-ui\dist\*") -Destination $WebOut -Recurse -Force
+        # 同步内置到服务端目录，server.exe 启动时会自动托管该目录
+        $EmbeddedOut = Join-Path $Dist "server\web-ui"
+        if (-not (Test-Path $EmbeddedOut)) {
+            New-Item -ItemType Directory -Path $EmbeddedOut | Out-Null
+        }
+        Copy-Item (Join-Path $Root "web-ui\dist\*") -Destination $EmbeddedOut -Recurse -Force
         Write-Host "Web-UI build succeeded" -ForegroundColor Green
     } finally {
         Pop-Location

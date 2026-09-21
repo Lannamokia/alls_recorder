@@ -91,7 +91,7 @@ sc query AllsRecorder    # 状态
    cd server
    ./target/release/server
    ```
-4. 使用 Nginx/Caddy 等反向代理服务前端静态文件（`web-ui/dist/`）
+4. 使用 Nginx/Caddy 等服务部署前端静态文件（`web-ui/dist/`）
 
 ## 编译指南
 
@@ -127,9 +127,26 @@ scripts\build_windows.bat
 
 ### 一键构建
 
+使用 `build_all.ps1` 可以自动编译所有组件并将产物统一输出到 `dist/` 目录。
+
 ```powershell
+# 编译所有组件（server + web-ui + cli-capture）
 .\build_all.ps1
+
+# 只编译指定组件
+.\build_all.ps1 server              # 只编译后端
+.\build_all.ps1 web-ui              # 只编译前端
+.\build_all.ps1 cli-capture         # 只编译采集 CLI
+.\build_all.ps1 server web-ui       # 编译后端和前端
+
+# 查看帮助
+.\build_all.ps1 -Help
 ```
+
+编译产物统一输出到：
+- `dist/server/server.exe`
+- `dist/web-ui/`（静态文件）
+- `dist/cli-capture/`（包含 cli-capture.exe 和依赖库）
 
 ## 快速开始
 
