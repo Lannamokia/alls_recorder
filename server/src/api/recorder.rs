@@ -41,12 +41,13 @@ pub struct ActiveUser {
     pub username: String,
 }
 
-async fn get_sys_val(pool: &sqlx::PgPool, key: &str) -> Option<serde_json::Value> {
-    let row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = $1")
-        .bind(key)
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+async fn get_sys_val(pool: &crate::db::DbPool, key: &str) -> Option<serde_json::Value> {
+    let row: Option<(serde_json::Value,)> = crate::dbq_as!(
+        pool, (serde_json::Value,), fetch_optional,
+        "SELECT value FROM system_config WHERE key = $1",
+        [key]
+    )
+    .unwrap_or(None);
     row.map(|r| r.0)
 }
 
@@ -287,7 +288,7 @@ pub(crate) fn validate_resolution_limit(requested: &str, max_value: &str) -> Res
 }
 
 async fn build_start_params(
-    pool: &sqlx::PgPool,
+    pool: &crate::db::DbPool,
     user_id: Uuid,
     username: &str,
     mode: String,
@@ -303,11 +304,12 @@ async fn build_start_params(
     validate_resolution_value(&sys_max_res, false).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
     validate_encoder_id(&sys_encoder).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
 
-    let user_config = sqlx::query_as::<_, crate::api::user_config::UserConfig>("SELECT max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key, capture_mode, capture_method, window_id FROM user_configs WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+    let user_config: Option<crate::api::user_config::UserConfig> = crate::dbq_as!(
+        pool, crate::api::user_config::UserConfig, fetch_optional,
+        "SELECT max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key, capture_mode, capture_method, window_id FROM user_configs WHERE user_id = $1",
+        [user_id]
+    )
+    .unwrap_or(None);
     
     let bitrate = user_config.as_ref().and_then(|c| c.max_bitrate).unwrap_or(sys_max_bitrate);
     let fps = user_config.as_ref().and_then(|c| c.max_fps).unwrap_or(sys_max_fps).min(sys_max_fps);
@@ -397,10 +399,12 @@ async fn build_start_params(
         // Validate filename
         validate_filename(&name).map_err(|e| (StatusCode::BAD_REQUEST, e).into_response())?;
 
-        let global_path_row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = 'global_recording_path'")
-            .fetch_optional(pool)
-            .await
-            .unwrap_or(None);
+        let global_path_row: Option<(serde_json::Value,)> = crate::dbq_as!(
+            pool, (serde_json::Value,), fetch_optional,
+            "SELECT value FROM system_config WHERE key = 'global_recording_path'",
+            []
+        )
+        .unwrap_or(None);
         
         let full_path = if let Some((val,)) = global_path_row {
             let base = val.as_str().unwrap_or("");
@@ -418,10 +422,12 @@ async fn build_start_params(
         filename = Some(name);
     }
 
-    let row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = 'cli_capture_path'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+    let row: Option<(serde_json::Value,)> = crate::dbq_as!(
+        pool, (serde_json::Value,), fetch_optional,
+        "SELECT value FROM system_config WHERE key = 'cli_capture_path'",
+        []
+    )
+    .unwrap_or(None);
     
     let cli_path = match row {
         Some((val,)) => val.as_str().unwrap_or("").to_string(),
@@ -492,14 +498,11 @@ async fn start_recording(
     match state.recorder_manager.start_recording(user_id, cli_path, args, mode.clone()).await {
         Ok(_) => {
             if let Some(name) = filename {
-                 let _ = sqlx::query(
-                    "INSERT INTO recordings (user_id, filename, filepath, status) VALUES ($1, $2, $3, 'recording')"
-                )
-                .bind(user_id)
-                .bind(&name)
-                .bind(format!("/recordings/{}", name))
-                .execute(pool)
-                .await;
+                 let _ = crate::dbq!(
+                    pool, execute,
+                    "INSERT INTO recordings (id, user_id, filename, filepath, status) VALUES ($1, $2, $3, $4, 'recording')",
+                    [Uuid::new_v4(), user_id, &name, format!("/recordings/{}", name)]
+                );
             }
             
             (StatusCode::OK, format!("{} started", if mode == "record" { "Recording" } else { "Streaming" })).into_response()
@@ -521,6 +524,7 @@ fn is_cli_config_error(msg: &str) -> bool {
     msg.contains("CLI path")
         || msg.contains("CLI is not executable")
         || msg.contains("Failed to execute CLI")
+        || msg.contains("Agent not running")
 }
 
 async fn stop_recording(
@@ -541,12 +545,11 @@ async fn perform_stop(state: &Arc<AppState>, user_id: Uuid) -> Response {
              // Update DB status
             let db_guard = state.db.read().await;
             if let Some(pool) = db_guard.as_ref() {
-                let _ = sqlx::query(
-                    "UPDATE recordings SET status = 'stopped' WHERE user_id = $1 AND status = 'recording'"
-                )
-                .bind(user_id)
-                .execute(pool)
-                .await;
+                let _ = crate::dbq!(
+                    pool, execute,
+                    "UPDATE recordings SET status = 'stopped' WHERE user_id = $1 AND status = 'recording'",
+                    [user_id]
+                );
             }
 
             (StatusCode::OK, "Process stopped").into_response()
@@ -593,12 +596,29 @@ async fn get_active_users(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let users = sqlx::query_as::<_, ActiveUser>(
-        "SELECT id as user_id, username FROM users WHERE id = ANY($1)"
-    )
-    .bind(&active_ids)
-    .fetch_all(pool)
-    .await;
+    let users: Result<Vec<ActiveUser>, sqlx::Error> = match pool {
+        crate::db::DbPool::Pg(p) => {
+            sqlx::query_as::<_, ActiveUser>(
+                "SELECT id as user_id, username FROM users WHERE id = ANY($1)"
+            )
+            .bind(&active_ids)
+            .fetch_all(p)
+            .await
+        }
+        crate::db::DbPool::Sqlite(p) => {
+            // SQLite 无 ANY 数组语法，展开为 IN (?1, ?2, ...)
+            let ph: Vec<String> = (1..=active_ids.len()).map(|i| format!("?{}", i)).collect();
+            let sql = format!(
+                "SELECT id as user_id, username FROM users WHERE id IN ({})",
+                ph.join(", ")
+            );
+            let mut q = sqlx::query_as::<_, ActiveUser>(&sql);
+            for id in &active_ids {
+                q = q.bind(id);
+            }
+            q.fetch_all(p).await
+        }
+    };
 
     match users {
         Ok(u) => Json(u).into_response(),
@@ -731,14 +751,11 @@ async fn respond_stop(
         }
 
         if let Some(name) = filename {
-            let _ = sqlx::query(
-                "INSERT INTO recordings (user_id, filename, filepath, status) VALUES ($1, $2, $3, 'recording')"
-            )
-            .bind(request.requester_id)
-            .bind(&name)
-            .bind(format!("/recordings/{}", name))
-            .execute(pool)
-            .await;
+            let _ = crate::dbq!(
+                pool, execute,
+                "INSERT INTO recordings (id, user_id, filename, filepath, status) VALUES ($1, $2, $3, $4, 'recording')",
+                [Uuid::new_v4(), request.requester_id, &name, format!("/recordings/{}", name)]
+            );
         }
 
         let mut requests = state.stop_requests.write().await;

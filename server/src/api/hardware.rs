@@ -54,10 +54,12 @@ async fn scan_hardware(
     };
 
     // Fetch CLI path
-    let row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = 'cli_capture_path'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+    let row: Option<(serde_json::Value,)> = crate::dbq_as!(
+        pool, (serde_json::Value,), fetch_optional,
+        "SELECT value FROM system_config WHERE key = 'cli_capture_path'",
+        []
+    )
+    .unwrap_or(None);
     
     let cli_path = match row {
         Some((val,)) => val.as_str().unwrap_or("").to_string(),
@@ -79,13 +81,12 @@ async fn scan_hardware(
     // Save to DB
     let json_value = serde_json::to_value(&info).unwrap();
 
-    let result = sqlx::query(
-        "INSERT INTO system_config (key, value) VALUES ('hardware_info', $1) 
-         ON CONFLICT (key) DO UPDATE SET value = $1"
-    )
-    .bind(json_value)
-    .execute(pool)
-    .await;
+    let result: Result<u64, sqlx::Error> = crate::dbq!(
+        pool, execute,
+        "INSERT INTO system_config (key, value) VALUES ('hardware_info', $1)
+         ON CONFLICT (key) DO UPDATE SET value = $1",
+        [json_value]
+    );
 
     match result {
         Ok(_) => Json(info).into_response(),
@@ -102,11 +103,11 @@ async fn get_hardware_info(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let rec: Option<SystemConfigRow> = sqlx::query_as(
-        "SELECT value FROM system_config WHERE key = 'hardware_info'"
+    let rec: Option<SystemConfigRow> = crate::dbq_as!(
+        pool, SystemConfigRow, fetch_optional,
+        "SELECT value FROM system_config WHERE key = 'hardware_info'",
+        []
     )
-    .fetch_optional(pool)
-    .await
     .unwrap_or(None); // Simplified error handling for fetch
 
     match rec {
@@ -119,4 +120,5 @@ fn is_cli_config_error(msg: &str) -> bool {
     msg.contains("CLI path")
         || msg.contains("CLI is not executable")
         || msg.contains("Failed to execute CLI")
+        || msg.contains("Agent not running")
 }

@@ -20,13 +20,28 @@ export default function InitPage() {
     confirmPassword: '' 
   });
   const [error, setError] = useState('');
+  // 用户显式选择的数据库类型；null 表示尚未探测到后端能力
+  const [dbChoice, setDbChoice] = useState<'sqlite' | 'postgres' | null>(null);
+  const [dbKindSupported, setDbKindSupported] = useState(true);
   const backendUrl = localStorage.getItem('backend_url');
   const backendName = localStorage.getItem('backend_name');
 
   useEffect(() => {
     if (!backendUrl) {
       navigate('/discover');
+      return;
     }
+    // 探测后端数据库类型作为默认选项；
+    // 旧版服务端无此接口时回退为 postgres（保持旧行为），升级服务端后可选手动切换。
+    axios.get<{ kind: 'sqlite' | 'postgres' }>(`${backendUrl}/api/setup/db_kind`)
+      .then(res => {
+        setDbChoice(res.data.kind);
+        setDbKindSupported(true);
+      })
+      .catch(() => {
+        setDbChoice('postgres');
+        setDbKindSupported(false);
+      });
   }, [backendUrl, navigate]);
 
   const generateSecret = () => {
@@ -43,7 +58,15 @@ export default function InitPage() {
       return;
     }
     try {
-      await axios.post(`${backendUrl}/api/setup/db`, dbConfig);
+      if (dbChoice === 'sqlite') {
+        // SQLite 模式：服务端已内置数据库，仅保存 JWT_SECRET
+        await axios.post(`${backendUrl}/api/setup/db`, {
+          host: '', port: 0, user: '', password: '', dbname: '',
+          jwt_secret: dbConfig.jwt_secret
+        });
+      } else {
+        await axios.post(`${backendUrl}/api/setup/db`, dbConfig);
+      }
       setStep(2);
       setError('');
     } catch (error) {
@@ -98,26 +121,72 @@ export default function InitPage() {
         {step === 1 ? (
           <form onSubmit={handleDbSubmit} className="space-y-4">
             <h2 className="text-xl font-semibold">第一步：数据库配置</h2>
-            <div>
-              <label className="block text-sm font-medium mb-1">主机地址</label>
-              <input type="text" value={dbConfig.host} onChange={e => setDbConfig({...dbConfig, host: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
+            {!dbKindSupported && (
+              <div className="bg-yellow-50 border border-yellow-300 text-yellow-800 px-4 py-3 rounded text-sm dark:bg-yellow-900/30 dark:border-yellow-700 dark:text-yellow-200">
+                当前服务端版本较旧，无法使用内置 SQLite。如已升级服务端，刷新页面后可选择。
+              </div>
+            )}
+            <div className="space-y-2">
+              <label className="flex items-start gap-2 p-3 border rounded cursor-pointer dark:border-gray-600">
+                <input
+                  type="radio"
+                  name="dbtype"
+                  className="mt-1"
+                  checked={dbChoice === 'sqlite'}
+                  onChange={() => setDbChoice('sqlite')}
+                />
+                <span>
+                  <span className="block font-medium">内置 SQLite（推荐）</span>
+                  <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    数据保存在程序目录，单机零配置，无需安装数据库
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 p-3 border rounded cursor-pointer dark:border-gray-600">
+                <input
+                  type="radio"
+                  name="dbtype"
+                  className="mt-1"
+                  checked={dbChoice === 'postgres'}
+                  onChange={() => setDbChoice('postgres')}
+                />
+                <span>
+                  <span className="block font-medium">外部 PostgreSQL</span>
+                  <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    连接已有的 PostgreSQL 服务，适合集中存储
+                  </span>
+                </span>
+              </label>
             </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">端口</label>
-              <input type="number" value={dbConfig.port} onChange={e => setDbConfig({...dbConfig, port: parseInt(e.target.value)})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">用户名</label>
-              <input type="text" value={dbConfig.user} onChange={e => setDbConfig({...dbConfig, user: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">密码</label>
-              <input type="password" value={dbConfig.password} onChange={e => setDbConfig({...dbConfig, password: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">数据库名称</label>
-              <input type="text" value={dbConfig.dbname} onChange={e => setDbConfig({...dbConfig, dbname: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
-            </div>
+            {dbChoice === 'sqlite' && (
+              <div className="bg-blue-50 border border-blue-200 text-blue-700 px-4 py-3 rounded text-sm dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-300">
+                使用内置 SQLite 数据库，无需配置连接信息，只需设置下方的 JWT_SECRET。
+              </div>
+            )}
+            {dbChoice === 'postgres' && (
+              <>
+                <div>
+                  <label className="block text-sm font-medium mb-1">主机地址</label>
+                  <input type="text" value={dbConfig.host} onChange={e => setDbConfig({...dbConfig, host: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">端口</label>
+                  <input type="number" value={dbConfig.port} onChange={e => setDbConfig({...dbConfig, port: parseInt(e.target.value)})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">用户名</label>
+                  <input type="text" value={dbConfig.user} onChange={e => setDbConfig({...dbConfig, user: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">密码</label>
+                  <input type="password" value={dbConfig.password} onChange={e => setDbConfig({...dbConfig, password: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">数据库名称</label>
+                  <input type="text" value={dbConfig.dbname} onChange={e => setDbConfig({...dbConfig, dbname: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
+                </div>
+              </>
+            )}
             <div>
               <label className="block text-sm font-medium mb-1">JWT_SECRET</label>
               <div className="flex gap-2">

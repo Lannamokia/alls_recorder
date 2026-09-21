@@ -89,19 +89,18 @@ async fn list_files(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let files = if role == "admin" {
-         sqlx::query_as::<_, RecordingFile>(
-            "SELECT id, filename, status, created_at FROM recordings ORDER BY created_at DESC"
+    let files: Result<Vec<RecordingFile>, sqlx::Error> = if role == "admin" {
+        crate::dbq_as!(
+            pool, RecordingFile, fetch_all,
+            "SELECT id, filename, status, created_at FROM recordings ORDER BY created_at DESC",
+            []
         )
-        .fetch_all(pool)
-        .await
     } else {
-        sqlx::query_as::<_, RecordingFile>(
-            "SELECT id, filename, status, created_at FROM recordings WHERE user_id = $1 ORDER BY created_at DESC"
+        crate::dbq_as!(
+            pool, RecordingFile, fetch_all,
+            "SELECT id, filename, status, created_at FROM recordings WHERE user_id = $1 ORDER BY created_at DESC",
+            [user_id]
         )
-        .bind(user_id)
-        .fetch_all(pool)
-        .await
     };
 
     match files {
@@ -110,7 +109,7 @@ async fn list_files(
     }
 }
 
-async fn resolve_file_path(pool: &sqlx::PgPool, filepath: &str) -> String {
+async fn resolve_file_path(pool: &crate::db::DbPool, filepath: &str) -> String {
     let path = FsPath::new(filepath);
     if path.is_absolute() {
         return filepath.to_string();
@@ -118,10 +117,12 @@ async fn resolve_file_path(pool: &sqlx::PgPool, filepath: &str) -> String {
 
     let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or(filepath);
 
-    let row: Option<(Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = 'global_recording_path'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+    let row: Option<(Value,)> = crate::dbq_as!(
+        pool, (Value,), fetch_optional,
+        "SELECT value FROM system_config WHERE key = 'global_recording_path'",
+        []
+    )
+    .unwrap_or(None);
 
     let base = row.and_then(|v| v.0.as_str().map(String::from)).unwrap_or_default();
     if base.is_empty() {
@@ -131,11 +132,13 @@ async fn resolve_file_path(pool: &sqlx::PgPool, filepath: &str) -> String {
     }
 }
 
-async fn get_recording_base(pool: &sqlx::PgPool) -> Result<PathBuf, Response> {
-    let row: Option<(Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = 'global_recording_path'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+async fn get_recording_base(pool: &crate::db::DbPool) -> Result<PathBuf, Response> {
+    let row: Option<(Value,)> = crate::dbq_as!(
+        pool, (Value,), fetch_optional,
+        "SELECT value FROM system_config WHERE key = 'global_recording_path'",
+        []
+    )
+    .unwrap_or(None);
 
     let base = row.and_then(|v| v.0.as_str().map(String::from)).unwrap_or_default();
     if base.trim().is_empty() {
@@ -150,11 +153,13 @@ async fn get_recording_base(pool: &sqlx::PgPool) -> Result<PathBuf, Response> {
     Ok(base_canon)
 }
 
-async fn get_download_token_ttl_minutes(pool: &sqlx::PgPool) -> i64 {
-    let row: Option<(Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = 'download_token_ttl_minutes'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+async fn get_download_token_ttl_minutes(pool: &crate::db::DbPool) -> i64 {
+    let row: Option<(Value,)> = crate::dbq_as!(
+        pool, (Value,), fetch_optional,
+        "SELECT value FROM system_config WHERE key = 'download_token_ttl_minutes'",
+        []
+    )
+    .unwrap_or(None);
     let minutes = row.and_then(|v| v.0.as_i64()).unwrap_or(60);
     if minutes < 1 { 1 } else { minutes }
 }
@@ -198,12 +203,11 @@ async fn delete_file(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let file: Option<FileOwnership> = sqlx::query_as(
-        "SELECT user_id, filepath, filename FROM recordings WHERE id = $1"
+    let file: Option<FileOwnership> = crate::dbq_as!(
+        pool, FileOwnership, fetch_optional,
+        "SELECT user_id, filepath, filename FROM recordings WHERE id = $1",
+        [id]
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await
     .unwrap_or(None);
 
     let file = match file {
@@ -222,10 +226,7 @@ async fn delete_file(
         }
     }
 
-    if let Err(e) = sqlx::query("DELETE FROM recordings WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await 
+    if let Err(e) = crate::dbq!(pool, execute, "DELETE FROM recordings WHERE id = $1", [id])
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB Delete Error: {}", e)).into_response();
     }
@@ -249,12 +250,11 @@ async fn create_download_token(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let file: Option<FileOwnership> = sqlx::query_as(
-        "SELECT user_id, filepath, filename FROM recordings WHERE id = $1"
+    let file: Option<FileOwnership> = crate::dbq_as!(
+        pool, FileOwnership, fetch_optional,
+        "SELECT user_id, filepath, filename FROM recordings WHERE id = $1",
+        [id]
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await
     .unwrap_or(None);
 
     let file = match file {
@@ -329,12 +329,11 @@ async fn download_with_token(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let file: Option<FileOwnership> = sqlx::query_as(
-        "SELECT user_id, filepath, filename FROM recordings WHERE id = $1"
+    let file: Option<FileOwnership> = crate::dbq_as!(
+        pool, FileOwnership, fetch_optional,
+        "SELECT user_id, filepath, filename FROM recordings WHERE id = $1",
+        [token_info.file_id]
     )
-    .bind(token_info.file_id)
-    .fetch_optional(pool)
-    .await
     .unwrap_or(None);
 
     let file = match file {
@@ -393,12 +392,11 @@ async fn rename_file(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let file: Option<FileOwnership> = sqlx::query_as(
-        "SELECT user_id, filepath, filename FROM recordings WHERE id = $1"
+    let file: Option<FileOwnership> = crate::dbq_as!(
+        pool, FileOwnership, fetch_optional,
+        "SELECT user_id, filepath, filename FROM recordings WHERE id = $1",
+        [id]
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await
     .unwrap_or(None);
 
     let file = match file {
@@ -443,14 +441,12 @@ async fn rename_file(
     let new_filepath = format!("/recordings/{}", new_name);
 
     // Update DB
-    if let Err(e) = sqlx::query(
-        "UPDATE recordings SET filename = $1, filepath = $2 WHERE id = $3"
+    if let Err(e) = crate::dbq!(
+        pool, execute,
+        "UPDATE recordings SET filename = $1, filepath = $2 WHERE id = $3",
+        [new_name, new_filepath, id]
     )
-    .bind(new_name)
-    .bind(new_filepath)
-    .bind(id)
-    .execute(pool)
-    .await {
+    {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB Update Error: {}", e)).into_response();
     }
 

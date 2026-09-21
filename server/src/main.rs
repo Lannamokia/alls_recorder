@@ -7,11 +7,11 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use sqlx::PgPool;
+use crate::core::recorder::{RecorderManager, StopRequest};
+use crate::db::DbPool;
 use tower_http::trace::TraceLayer;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use crate::core::recorder::{RecorderManager, StopRequest};
 use std::collections::HashMap;
 use uuid::Uuid;
 use std::sync::Once;
@@ -26,7 +26,7 @@ pub struct DownloadToken {
 }
 
 pub struct AppState {
-    pub db: RwLock<Option<PgPool>>,
+    pub db: RwLock<Option<DbPool>>,
     pub recorder_manager: Arc<RecorderManager>,
     pub stop_requests: RwLock<HashMap<Uuid, StopRequest>>,
     pub download_tokens: RwLock<HashMap<String, DownloadToken>>,
@@ -121,24 +121,48 @@ fn init_tracing() {
     });
 }
 
-async fn build_state() -> Arc<AppState> {
-    init_tracing();
-    let db_pool = if let Ok(url) = std::env::var("DATABASE_URL") {
-        match sqlx::postgres::PgPoolOptions::new().connect(&url).await {
-            Ok(pool) => {
-                tracing::info!("Connected to database");
-                if let Err(e) = crate::db::ensure_schema(&pool).await {
-                    tracing::error!("Failed to ensure database schema: {}", e);
-                }
-                Some(pool)
+static LOG_GUARD: std::sync::OnceLock<std::sync::Mutex<tracing_appender::non_blocking::WorkerGuard>> =
+    std::sync::OnceLock::new();
+
+/// 删除日志目录中修改时间超过 `keep_days` 天的文件。
+fn cleanup_old_logs(log_dir: &std::path::Path, keep_days: u64) {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(keep_days * 86400))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    if let Ok(entries) = std::fs::read_dir(log_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
             }
-            Err(e) => {
-                tracing::warn!("Failed to connect to database: {}", e);
-                None
+            let too_old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|t| t < cutoff)
+                .unwrap_or(false);
+            if too_old {
+                let _ = std::fs::remove_file(&path);
             }
         }
-    } else {
-        None
+    }
+}
+
+async fn build_state() -> Arc<AppState> {
+    init_tracing();
+    // 数据库选择：
+    //   * DATABASE_URL=postgres://... → PostgreSQL（既有部署）
+    //   * DATABASE_URL=sqlite://path  → 指定 SQLite 文件
+    //   * 未设置                      → 默认可执行文件旁 data/alls_recorder.db（单机零配置）
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| default_sqlite_url());
+    let db_pool = match crate::db::connect(&db_url).await {
+        Ok(pool) => {
+            tracing::info!("Connected to database ({})", if pool.is_pg() { "postgres" } else { "sqlite" });
+            Some(pool)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to connect to database: {}", e);
+            None
+        }
     };
 
     Arc::new(AppState {
@@ -147,6 +171,20 @@ async fn build_state() -> Arc<AppState> {
         stop_requests: RwLock::new(HashMap::new()),
         download_tokens: RwLock::new(HashMap::new()),
     })
+}
+
+/// 默认 SQLite 位置：<exe_dir>/data/alls_recorder.db，便于随软件分发、免安装。
+fn default_sqlite_url() -> String {
+    let dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let data_dir = dir.join("data");
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        tracing::warn!("Failed to create data directory: {}", e);
+    }
+    format!("sqlite://{}", data_dir.join("alls_recorder.db").display())
+        .replace('\\', "/")
 }
 
 fn build_app(state: Arc<AppState>) -> Router {
@@ -177,8 +215,11 @@ where
         shutdown.await;
         let _ = shutdown_tx.send(true);
     });
+    // 断线重连看门狗：仅 PostgreSQL 需要（网络连接可能断开）；
+    // SQLite 是本地文件，连接池创建即长期有效，无需重连。
     if is_service_mode() {
-        if let Ok(url) = std::env::var("DATABASE_URL") {
+        let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| default_sqlite_url());
+        if !crate::db::is_sqlite_url(&url) {
             let state_clone = state.clone();
             let mut shutdown_rx = shutdown_rx.clone();
             tokio::spawn(async move {
@@ -193,7 +234,7 @@ where
                     };
                     let mut needs_connect = pool_opt.is_none();
                     if let Some(pool) = pool_opt {
-                        if let Err(e) = sqlx::query("SELECT 1").execute(&pool).await {
+                        if let Err(e) = crate::db::ping(&pool).await {
                             tracing::warn!("Database connection lost, retrying in 3s: {}", e);
                             needs_connect = true;
                             let mut db_guard = state_clone.db.write().await;
@@ -201,11 +242,8 @@ where
                         }
                     }
                     if needs_connect {
-                        match sqlx::postgres::PgPoolOptions::new().connect(&url).await {
+                        match crate::db::connect(&url).await {
                             Ok(pool) => {
-                                if let Err(e) = crate::db::ensure_schema(&pool).await {
-                                    tracing::error!("Failed to ensure schema on reconnect: {}", e);
-                                }
                                 let mut db_guard = state_clone.db.write().await;
                                 *db_guard = Some(pool);
                                 tracing::info!("Connected to database");

@@ -54,9 +54,11 @@ async fn list_announcements(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let announcements = sqlx::query_as::<_, Announcement>("SELECT id, content, created_at FROM announcements ORDER BY created_at DESC")
-        .fetch_all(pool)
-        .await;
+    let announcements = crate::dbq_as!(
+        pool, Announcement, fetch_all,
+        "SELECT id, content, created_at FROM announcements ORDER BY created_at DESC",
+        []
+    );
 
     match announcements {
         Ok(a) => Json(a).into_response(),
@@ -84,10 +86,7 @@ async fn delete_announcement(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    if let Err(e) = sqlx::query("DELETE FROM announcements WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await
+    if let Err(e) = crate::dbq!(pool, execute, "DELETE FROM announcements WHERE id = $1", [id])
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to delete: {}", e)).into_response();
     }
@@ -129,13 +128,11 @@ async fn create_announcement(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    if let Err(e) = sqlx::query(
-        "INSERT INTO announcements (content, created_by) VALUES ($1, $2)"
-    )
-    .bind(&payload.content)
-    .bind(user_id)
-    .execute(pool)
-    .await {
+    if let Err(e) = crate::dbq!(
+        pool, execute,
+        "INSERT INTO announcements (id, content, created_by) VALUES ($1, $2, $3)",
+        [Uuid::new_v4(), &payload.content, user_id]
+    ) {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB Error: {}", e)).into_response();
     }
 
@@ -158,20 +155,19 @@ async fn get_unread_announcements(
     };
 
     // Find announcements NOT in user_read_announcements for this user
-    let announcements = sqlx::query_as::<_, Announcement>(
+    let announcements = crate::dbq_as!(
+        pool, Announcement, fetch_all,
         r#"
-        SELECT a.id, a.content, a.created_at 
+        SELECT a.id, a.content, a.created_at
         FROM announcements a
         WHERE NOT EXISTS (
-            SELECT 1 FROM user_read_announcements ura 
+            SELECT 1 FROM user_read_announcements ura
             WHERE ura.announcement_id = a.id AND ura.user_id = $1
         )
         ORDER BY a.created_at DESC
-        "#
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await;
+        "#,
+        [user_id]
+    );
 
     match announcements {
         Ok(a) => Json(a).into_response(),
@@ -195,13 +191,11 @@ async fn mark_read(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    if let Err(e) = sqlx::query(
-        "INSERT INTO user_read_announcements (user_id, announcement_id) VALUES ($1, $2) ON CONFLICT DO NOTHING"
-    )
-    .bind(user_id)
-    .bind(id)
-    .execute(pool)
-    .await {
+    if let Err(e) = crate::dbq!(
+        pool, execute,
+        "INSERT INTO user_read_announcements (user_id, announcement_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        [user_id, id]
+    ) {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB Error: {}", e)).into_response();
     }
 

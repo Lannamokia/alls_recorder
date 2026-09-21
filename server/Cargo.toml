@@ -9,17 +9,19 @@ axum = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
+tower = { version = "0.4", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = "0.15"
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "sqlite", "uuid", "chrono", "json"] }
 uuid = { version = "1.7", features = ["serde", "v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 jsonwebtoken = "9.2"
 bcrypt = "0.15"
 anyhow = "1.0"
 sysinfo = "0.30"
+tracing-appender = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_RemoteDesktop", "Win32_System_Environment", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Networking_WinSock", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

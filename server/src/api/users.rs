@@ -56,9 +56,11 @@ async fn list_users(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let users = sqlx::query_as::<_, UserInfo>("SELECT id, username, role, created_at FROM users ORDER BY created_at DESC")
-        .fetch_all(pool)
-        .await;
+    let users = crate::dbq_as!(
+        pool, UserInfo, fetch_all,
+        "SELECT id, username, role, created_at FROM users ORDER BY created_at DESC",
+        []
+    );
 
     match users {
         Ok(u) => Json(u).into_response(),
@@ -83,10 +85,7 @@ async fn delete_user(
 
     // Cannot delete self? Maybe check that later.
     
-    match sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await 
+    match crate::dbq!(pool, execute, "DELETE FROM users WHERE id = $1", [id])
     {
         Ok(_) => (StatusCode::OK, "User deleted").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to delete user: {}", e)).into_response(),
@@ -114,11 +113,7 @@ async fn reset_password(
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to hash password").into_response(),
     };
 
-    match sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
-        .bind(hash)
-        .bind(id)
-        .execute(pool)
-        .await
+    match crate::dbq!(pool, execute, "UPDATE users SET password_hash = $1 WHERE id = $2", [hash, id])
     {
         Ok(_) => (StatusCode::OK, "Password reset").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to reset password: {}", e)).into_response(),

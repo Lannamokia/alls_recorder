@@ -44,12 +44,13 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/config", get(get_config).post(update_config))
 }
 
-async fn get_sys_val(pool: &sqlx::PgPool, key: &str) -> Option<serde_json::Value> {
-    let row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = $1")
-        .bind(key)
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+async fn get_sys_val(pool: &crate::db::DbPool, key: &str) -> Option<serde_json::Value> {
+    let row: Option<(serde_json::Value,)> = crate::dbq_as!(
+        pool, (serde_json::Value,), fetch_optional,
+        "SELECT value FROM system_config WHERE key = $1",
+        [key]
+    )
+    .unwrap_or(None);
     row.map(|r| r.0)
 }
 
@@ -68,11 +69,12 @@ async fn get_config(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let config = sqlx::query_as::<_, UserConfig>("SELECT max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key, capture_mode, capture_method, window_id FROM user_configs WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+    let config: Option<UserConfig> = crate::dbq_as!(
+        pool, UserConfig, fetch_optional,
+        "SELECT max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key, capture_mode, capture_method, window_id FROM user_configs WHERE user_id = $1",
+        [user_id]
+    )
+    .unwrap_or(None);
 
     match config {
         Some(c) => Json(c).into_response(),
@@ -186,7 +188,8 @@ async fn update_config(
         }
     }
 
-    let result = sqlx::query(
+    let result: Result<u64, sqlx::Error> = crate::dbq!(
+        pool, execute,
         r#"
         INSERT INTO user_configs (user_id, max_bitrate, max_fps, resolution, monitor_id, desktop_audio, mic_audio, rtmp_url, rtmp_key, capture_mode, capture_method, window_id)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -203,22 +206,22 @@ async fn update_config(
             capture_mode = EXCLUDED.capture_mode,
             capture_method = EXCLUDED.capture_method,
             window_id = EXCLUDED.window_id
-        "#
-    )
-    .bind(user_id)
-    .bind(payload.max_bitrate)
-    .bind(payload.max_fps)
-    .bind(payload.resolution)
-    .bind(payload.monitor_id)
-    .bind(payload.desktop_audio)
-    .bind(payload.mic_audio)
-    .bind(payload.rtmp_url)
-    .bind(payload.rtmp_key)
-    .bind(payload.capture_mode)
-    .bind(payload.capture_method)
-    .bind(payload.window_id)
-    .execute(pool)
-    .await;
+        "#,
+        [
+            user_id,
+            payload.max_bitrate,
+            payload.max_fps,
+            payload.resolution,
+            payload.monitor_id,
+            payload.desktop_audio,
+            payload.mic_audio,
+            payload.rtmp_url,
+            payload.rtmp_key,
+            payload.capture_mode,
+            payload.capture_method,
+            payload.window_id
+        ]
+    );
 
     match result {
         Ok(_) => (StatusCode::OK, "Config updated").into_response(),

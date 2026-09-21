@@ -56,10 +56,12 @@ async fn get_global_path(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = 'global_recording_path'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+    let row: Option<(serde_json::Value,)> = crate::dbq_as!(
+        pool, (serde_json::Value,), fetch_optional,
+        "SELECT value FROM system_config WHERE key = 'global_recording_path'",
+        []
+    )
+    .unwrap_or(None);
 
     let path = match row {
         Some((val,)) => val.as_str().unwrap_or("").to_string(),
@@ -81,10 +83,11 @@ async fn set_global_path(
 
     let val = serde_json::Value::String(payload.path.clone());
 
-    if let Err(e) = sqlx::query("INSERT INTO system_config (key, value) VALUES ('global_recording_path', $1) ON CONFLICT (key) DO UPDATE SET value = $1")
-        .bind(val)
-        .execute(pool)
-        .await
+    if let Err(e) = crate::dbq!(
+        pool, execute,
+        "INSERT INTO system_config (key, value) VALUES ('global_recording_path', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
+        [val]
+    )
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to update config: {}", e)).into_response();
     }
@@ -101,10 +104,12 @@ async fn get_download_token_ttl(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = 'download_token_ttl_minutes'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+    let row: Option<(serde_json::Value,)> = crate::dbq_as!(
+        pool, (serde_json::Value,), fetch_optional,
+        "SELECT value FROM system_config WHERE key = 'download_token_ttl_minutes'",
+        []
+    )
+    .unwrap_or(None);
 
     let minutes = row.and_then(|v| v.0.as_i64()).unwrap_or(60);
     Json(DownloadTokenTtlConfig { minutes }).into_response()
@@ -123,10 +128,11 @@ async fn set_download_token_ttl(
     let minutes = if payload.minutes < 1 { 1 } else { payload.minutes };
     let val = serde_json::Value::Number(serde_json::Number::from(minutes));
 
-    if let Err(e) = sqlx::query("INSERT INTO system_config (key, value) VALUES ('download_token_ttl_minutes', $1) ON CONFLICT (key) DO UPDATE SET value = $1")
-        .bind(val)
-        .execute(pool)
-        .await
+    if let Err(e) = crate::dbq!(
+        pool, execute,
+        "INSERT INTO system_config (key, value) VALUES ('download_token_ttl_minutes', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
+        [val]
+    )
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to update config: {}", e)).into_response();
     }
@@ -143,10 +149,12 @@ async fn get_server_name(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = 'server_name'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+    let row: Option<(serde_json::Value,)> = crate::dbq_as!(
+        pool, (serde_json::Value,), fetch_optional,
+        "SELECT value FROM system_config WHERE key = 'server_name'",
+        []
+    )
+    .unwrap_or(None);
 
     let name = match row.and_then(|v| v.0.as_str().map(|s| s.to_string())) {
         Some(v) if !v.trim().is_empty() => v,
@@ -170,10 +178,11 @@ async fn set_server_name(
 
     let val = serde_json::Value::String(payload.name.trim().to_string());
 
-    if let Err(e) = sqlx::query("INSERT INTO system_config (key, value) VALUES ('server_name', $1) ON CONFLICT (key) DO UPDATE SET value = $1")
-        .bind(val)
-        .execute(pool)
-        .await
+    if let Err(e) = crate::dbq!(
+        pool, execute,
+        "INSERT INTO system_config (key, value) VALUES ('server_name', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
+        [val]
+    )
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to update config: {}", e)).into_response();
     }
@@ -190,10 +199,12 @@ async fn get_cli_path(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = 'cli_capture_path'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None);
+    let row: Option<(serde_json::Value,)> = crate::dbq_as!(
+        pool, (serde_json::Value,), fetch_optional,
+        "SELECT value FROM system_config WHERE key = 'cli_capture_path'",
+        []
+    )
+    .unwrap_or(None);
 
     let path = match row {
         Some((val,)) => val.as_str().unwrap_or("").to_string(),
@@ -215,10 +226,11 @@ async fn set_cli_path(
 
     let val = serde_json::Value::String(payload.path.clone());
 
-    if let Err(e) = sqlx::query("INSERT INTO system_config (key, value) VALUES ('cli_capture_path', $1) ON CONFLICT (key) DO UPDATE SET value = $1")
-        .bind(val)
-        .execute(pool)
-        .await
+    if let Err(e) = crate::dbq!(
+        pool, execute,
+        "INSERT INTO system_config (key, value) VALUES ('cli_capture_path', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
+        [val]
+    )
     {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to update config: {}", e)).into_response();
     }
@@ -236,12 +248,13 @@ async fn get_record_config(
     };
 
     // Helper to get value
-    async fn get_val(pool: &sqlx::PgPool, key: &str) -> Option<serde_json::Value> {
-        let row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key = $1")
-            .bind(key)
-            .fetch_optional(pool)
-            .await
-            .unwrap_or(None);
+    async fn get_val(pool: &crate::db::DbPool, key: &str) -> Option<serde_json::Value> {
+        let row: Option<(serde_json::Value,)> = crate::dbq_as!(
+            pool, (serde_json::Value,), fetch_optional,
+            "SELECT value FROM system_config WHERE key = $1",
+            [key]
+        )
+        .unwrap_or(None);
         row.map(|r| r.0)
     }
 
@@ -286,13 +299,13 @@ async fn set_record_config(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to start transaction: {}", e)).into_response(),
     };
 
-    async fn upsert(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, key: &str, val: serde_json::Value) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT INTO system_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2")
-            .bind(key)
-            .bind(val)
-            .execute(&mut **tx)
-            .await
-            .map(|_| ())
+    async fn upsert(tx: &mut crate::db::DbTx<'_>, key: &str, val: serde_json::Value) -> Result<(), sqlx::Error> {
+        crate::dbq_tx!(
+            tx, execute,
+            "INSERT INTO system_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
+            [key, val]
+        )
+        .map(|_| ())
     }
 
     if let Err(e) = upsert(&mut tx, "max_bitrate", serde_json::json!(payload.max_bitrate)).await {

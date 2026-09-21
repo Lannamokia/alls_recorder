@@ -48,12 +48,11 @@ async fn login(
         None => return (StatusCode::SERVICE_UNAVAILABLE, "Database not connected").into_response(),
     };
 
-    let user: Option<User> = match sqlx::query_as(
-        "SELECT id, password_hash, role FROM users WHERE username = $1"
+    let user: Option<User> = match crate::dbq_as!(
+        pool, User, fetch_optional,
+        "SELECT id, password_hash, role FROM users WHERE username = $1",
+        [&payload.username]
     )
-    .bind(&payload.username)
-    .fetch_optional(pool)
-    .await
     {
         Ok(u) => u,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB Error: {}", e)).into_response(),
@@ -124,13 +123,13 @@ async fn register(
     }
 
     // Check if user exists
-    let exists = match sqlx::query("SELECT id FROM users WHERE username = $1")
-        .bind(&payload.username)
-        .fetch_optional(pool)
-        .await
+    let exists = match crate::dbq!(
+        pool, exists,
+        "SELECT id FROM users WHERE username = $1",
+        [&payload.username]
+    )
     {
-        Ok(Some(_)) => true,
-        Ok(None) => false,
+        Ok(v) => v,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("DB Error: {}", e)).into_response(),
     };
 
@@ -145,16 +144,12 @@ async fn register(
 
     let role = "user";
 
-    // Insert and get ID
-    // Note: RETURNING clause works with query_scalar or query_as
-    let user_id: Uuid = match sqlx::query_scalar(
-        "INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id"
+    // Insert and get ID。id 由应用生成（SQLite 无 uuid_generate_v4() 默认值），两库通用。
+    let user_id: Uuid = match crate::dbq_scalar!(
+        pool, Uuid, fetch_one,
+        "INSERT INTO users (id, username, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id",
+        [Uuid::new_v4(), &payload.username, password_hash, role]
     )
-    .bind(&payload.username)
-    .bind(password_hash)
-    .bind(role)
-    .fetch_one(pool)
-    .await
     {
         Ok(id) => id,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create user: {}", e)).into_response(),

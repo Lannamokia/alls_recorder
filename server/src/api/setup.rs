@@ -10,6 +10,7 @@ use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use std::fs::File;
 use std::path::Path;
+use uuid::Uuid;
 
 use crate::AppState;
 
@@ -40,14 +41,52 @@ pub struct AdminConfig {
     pub password: String,
 }
 
+/// 当前数据库类型，供前端初始化向导决定是否需要填写 PG 连接信息。
+#[derive(Serialize)]
+pub struct DbKindResponse {
+    pub kind: &'static str, // "sqlite" | "postgres"
+    pub configured: bool,
+}
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/status", get(check_status))
         .route("/setup/status", get(check_status))
         .route("/info", get(get_info))
         .route("/setup/info", get(get_info))
+        .route("/setup/db_kind", get(get_db_kind))
         .route("/setup/db", post(setup_db))
         .route("/setup/admin", post(setup_admin))
+}
+
+/// 解析"生效中的数据库 URL"：环境变量优先，未设置时为默认 SQLite 路径。
+fn effective_db_url() -> String {
+    std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        let dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+        format!("sqlite://{}", dir.join("data").join("alls_recorder.db").display()).replace('\\', "/")
+    })
+}
+
+async fn get_db_kind(State(state): State<Arc<AppState>>) -> Json<DbKindResponse> {
+    let db_guard = state.db.read().await;
+    let kind = match db_guard.as_ref() {
+        Some(crate::db::DbPool::Pg(_)) => "postgres",
+        Some(crate::db::DbPool::Sqlite(_)) => "sqlite",
+        None => {
+            if crate::db::is_sqlite_url(&effective_db_url()) {
+                "sqlite"
+            } else {
+                "postgres"
+            }
+        }
+    };
+    Json(DbKindResponse {
+        kind,
+        configured: db_guard.is_some(),
+    })
 }
 
 async fn check_status(_state: State<Arc<AppState>>) -> impl IntoResponse {
@@ -63,9 +102,11 @@ async fn get_info(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
     let db_guard = state.db.read().await;
     if let Some(pool) = db_guard.as_ref() {
-        if let Ok(row) = sqlx::query_as::<_, (serde_json::Value,)>("SELECT value FROM system_config WHERE key = 'server_name'")
-            .fetch_optional(pool)
-            .await
+        if let Ok(row) = crate::dbq_as!(
+            pool, (serde_json::Value,), fetch_optional,
+            "SELECT value FROM system_config WHERE key = 'server_name'",
+            []
+        )
         {
             if let Some((val,)) = row {
                 if let Some(v) = val.as_str() {
@@ -103,6 +144,25 @@ async fn setup_db(
     if jwt_secret.to_lowercase() == jwt_secret || jwt_secret.to_uppercase() == jwt_secret {
         return (StatusCode::BAD_REQUEST, "JWT_SECRET should contain mixed case characters").into_response();
     }
+
+    // SQLite 模式：数据库在启动时已自动创建并挂载，无需创建库/连接，
+    // 本步骤仅保存 JWT_SECRET 配置。
+    let db_guard = state.db.read().await;
+    if matches!(db_guard.as_ref(), Some(crate::db::DbPool::Sqlite(_))) {
+        drop(db_guard);
+        let url = effective_db_url();
+        let env_content = format!(
+            "DATABASE_URL={}\nRUST_LOG=server=debug,tower_http=debug\nJWT_SECRET={}\n",
+            url,
+            jwt_secret
+        );
+        if let Err(e) = std::fs::write(".env", env_content) {
+             return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to write .env: {}", e)).into_response();
+        }
+        std::env::set_var("JWT_SECRET", jwt_secret);
+        return (StatusCode::OK, "Configuration saved (SQLite mode)").into_response();
+    }
+    drop(db_guard);
 
     let url = format!(
         "postgres://{}:{}@{}:{}/{}",
@@ -154,14 +214,14 @@ async fn setup_db(
     };
 
     // Run idempotent schema initialization
-    if let Err(e) = crate::db::ensure_schema(&pool).await {
+    if let Err(e) = crate::db::ensure_schema_pg(&pool).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to initialize schema: {}", e)).into_response();
     }
 
     // Store pool in state
     {
         let mut db_guard = state.db.write().await;
-        *db_guard = Some(pool);
+        *db_guard = Some(crate::db::DbPool::Pg(pool));
     }
 
     // Save DB config to .env temporarily (or permanently)
@@ -227,14 +287,12 @@ async fn setup_admin(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to hash password: {}", e)).into_response(),
     };
 
-    // Insert admin using runtime query
-    let result = sqlx::query(
-        "INSERT INTO users (username, password_hash, role) VALUES ($1, $2, 'admin')"
-    )
-    .bind(&config.username)
-    .bind(password_hash)
-    .execute(pool)
-    .await;
+    // Insert admin using runtime query（id 由应用生成，SQLite 无 uuid 默认值）
+    let result = crate::dbq!(
+        pool, execute,
+        "INSERT INTO users (id, username, password_hash, role) VALUES ($1, $2, $3, 'admin')",
+        [Uuid::new_v4(), &config.username, password_hash]
+    );
 
     if let Err(e) = result {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create admin: {}", e)).into_response();
