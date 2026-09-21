@@ -30,6 +30,7 @@ pub struct AppState {
     pub recorder_manager: Arc<RecorderManager>,
     pub stop_requests: RwLock<HashMap<Uuid, StopRequest>>,
     pub download_tokens: RwLock<HashMap<String, DownloadToken>>,
+    pub captcha_store: api::captcha::CaptchaStore,
 }
 
 #[cfg(windows)]
@@ -170,6 +171,7 @@ async fn build_state() -> Arc<AppState> {
         recorder_manager: Arc::new(RecorderManager::new()),
         stop_requests: RwLock::new(HashMap::new()),
         download_tokens: RwLock::new(HashMap::new()),
+        captcha_store: api::captcha::CaptchaStore::default(),
     })
 }
 
@@ -192,6 +194,7 @@ fn build_app(state: Arc<AppState>) -> Router {
         .route("/", get(root))
         .nest("/api", api::setup::router())
         .nest("/api/auth", api::auth::router())
+        .nest("/api/discovery", api::discovery::router())
         .nest("/api/hardware", api::hardware::router())
         .nest("/api/recorder", api::recorder::router())
         .nest("/api/files", api::files::router())

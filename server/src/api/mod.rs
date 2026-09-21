@@ -1,5 +1,7 @@
 pub mod setup;
 pub mod auth;
+pub mod captcha;
+pub mod discovery;
 pub mod hardware;
 pub mod recorder;
 pub mod files;
@@ -8,6 +10,3 @@ pub mod settings;
 pub mod user_config;
 pub mod users;
 pub mod service;
-
-
-

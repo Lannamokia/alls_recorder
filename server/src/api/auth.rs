@@ -2,12 +2,13 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::post,
+    routing::{get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::AppState;
+use crate::api::captcha;
 use crate::core::auth::create_jwt;
 use uuid::Uuid;
 use sqlx::FromRow;
@@ -16,6 +17,8 @@ use sqlx::FromRow;
 pub struct AuthPayload {
     pub username: String,
     pub password: String,
+    pub captcha_id: Option<String>,
+    pub captcha_answer: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -36,12 +39,34 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/login", post(login))
         .route("/register", post(register))
+        .route("/captcha", get(captcha::captcha_handler))
+}
+
+/// 校验一次性验证码，失败时直接返回 400 响应。
+async fn check_captcha(state: &AppState, payload: &AuthPayload) -> Result<(), axum::response::Response> {
+    let valid = match (&payload.captcha_id, &payload.captcha_answer) {
+        (Some(id), Some(answer)) => state.captcha_store.verify(id, answer).await,
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            "验证码错误或已过期，请重试",
+        )
+            .into_response())
+    }
 }
 
 async fn login(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AuthPayload>,
 ) -> impl IntoResponse {
+    if let Err(resp) = check_captcha(&state, &payload).await {
+        return resp;
+    }
+
     let db_guard = state.db.read().await;
     let pool = match db_guard.as_ref() {
         Some(p) => p,
@@ -111,6 +136,10 @@ async fn register(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AuthPayload>,
 ) -> impl IntoResponse {
+    if let Err(resp) = check_captcha(&state, &payload).await {
+        return resp;
+    }
+
     let db_guard = state.db.read().await;
     let pool = match db_guard.as_ref() {
         Some(p) => p,

@@ -150,6 +150,25 @@ export default function BackendDiscovery() {
     const savedBackend = localStorage.getItem('backend_url');
     if (savedBackend) bases.add(normalizeBaseUrl(savedBackend));
     candidatesRef.current.forEach(v => bases.add(normalizeBaseUrl(v)));
+
+    // 服务端内置托管时，当前 origin 即服务端，可直接拿到其通告的网络地址列表
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1500);
+      const res = await fetch(`${window.location.origin}/api/discovery/info`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data?.addresses)) {
+          data.addresses.forEach((addr: unknown) => {
+            if (typeof addr === 'string') bases.add(normalizeBaseUrl(addr));
+          });
+        }
+      }
+    } catch {
+      // 独立部署（如 vite dev）时同域没有该接口，忽略即可
+    }
+
     const list = Array.from(bases).filter(Boolean);
     await Promise.all(list.map(b => probeBackend(b)));
   }, [normalizeBaseUrl, probeBackend]);

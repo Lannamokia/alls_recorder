@@ -12,13 +12,32 @@ export default function Login() {
     confirmPassword: ''
   });
   const [error, setError] = useState('');
+  const [captcha, setCaptcha] = useState<{ id: string; question: string } | null>(null);
+  const [captchaInput, setCaptchaInput] = useState('');
   const backendUrl = localStorage.getItem('backend_url');
   const backendName = localStorage.getItem('backend_name');
+
+  const loadCaptcha = async () => {
+    setCaptchaInput('');
+    if (!backendUrl) {
+      setCaptcha(null);
+      return;
+    }
+    try {
+      const response = await axios.get(`${backendUrl}/api/auth/captcha`);
+      setCaptcha(response.data);
+    } catch {
+      setCaptcha(null);
+    }
+  };
 
   useEffect(() => {
     if (!backendUrl) {
       navigate('/discover');
+    } else {
+      loadCaptcha();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backendUrl, navigate]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -40,10 +59,17 @@ export default function Login() {
       }
     }
 
+    if (!captcha || !captchaInput.trim()) {
+      setError('请输入验证码');
+      return;
+    }
+
     const endpoint = isRegistering ? '/api/auth/register' : '/api/auth/login';
     const payload = {
       username: formData.username,
-      password: formData.password
+      password: formData.password,
+      captcha_id: captcha.id,
+      captcha_answer: captchaInput.trim()
     };
 
     try {
@@ -60,6 +86,7 @@ export default function Login() {
       navigate('/');
     } catch (error) {
       console.error(error);
+      loadCaptcha(); // 验证码一次性使用，失败即换题
       const errorMessage = axios.isAxiosError(error)
         ? error.response?.data ?? error.message
         : error instanceof Error
@@ -119,6 +146,34 @@ export default function Login() {
                 className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" 
                 required 
               />
+            </div>
+          )}
+
+          {captcha && (
+            <div>
+              <label className="block text-sm font-medium mb-1">验证码</label>
+              <div className="flex items-center space-x-2">
+                <span className="px-3 py-2 bg-gray-200 dark:bg-gray-700 rounded font-mono whitespace-nowrap select-none">
+                  {captcha.question} = ?
+                </span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={captchaInput}
+                  onChange={(e) => setCaptchaInput(e.target.value)}
+                  className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+                  placeholder="计算结果"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={loadCaptcha}
+                  title="换一题"
+                  className="px-3 py-2 text-sm text-blue-500 hover:underline whitespace-nowrap"
+                >
+                  换一题
+                </button>
+              </div>
             </div>
           )}
 
