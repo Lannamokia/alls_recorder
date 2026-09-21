@@ -55,9 +55,34 @@ pub async fn probe_hardware(cli_path: String) -> anyhow::Result<HardwareInfo> {
 
 async fn run_scan(cli_path: &str, args: Vec<String>) -> anyhow::Result<String> {
     if is_service_mode() {
+        // 优先：直接以活动会话用户身份运行扫描（无需 agent，同录制拉起的新路径）
+        #[cfg(windows)]
+        {
+            let launcher = crate::core::session_launch::global_launcher();
+            match launcher
+                // cli-capture --scan 的耗时波动极大（本机实测同一参数连续 4 次为
+                // 91s / 4s / 14s / 2s，全部成功），60 秒会把偶发的长尾误判成拉起失败。
+                .run_in_session(cli_path, &args, std::time::Duration::from_secs(180))
+                .await
+            {
+                Ok(out) => return Ok(out),
+                Err(e) => {
+                    tracing::warn!(
+                        "会话内扫描失败（{}），回退到采集代理: {}",
+                        cli_path,
+                        e
+                    );
+                }
+            }
+        }
+
+        // 回退：经 agent（用户态计划任务进程）执行
         let agent_addr = std::env::var("AGENT_ADDR").unwrap_or_else(|_| "127.0.0.1:3001".to_string());
-        let agent_client = AgentClient::new(agent_addr);
-        return agent_client.scan_hardware_with_args(cli_path.to_string(), args).await;
+        let agent_client = AgentClient::new(agent_addr.clone());
+        return agent_client
+            .scan_hardware_with_args(cli_path.to_string(), args)
+            .await
+            .map_err(|e| crate::core::agent_client::map_agent_connect_error(e, &agent_addr));
     }
     let output = tokio::process::Command::new(cli_path)
         .args(&args)
@@ -76,6 +101,27 @@ async fn run_scan(cli_path: &str, args: Vec<String>) -> anyhow::Result<String> {
 fn is_service_mode() -> bool {
     std::env::args().any(|arg| arg == "--service")
         || std::env::var("RUN_AS_SERVICE").map(|v| v == "1").unwrap_or(false)
+}
+
+/// 将代理连接错误翻译为可操作的提示（实现见 agent_client::map_agent_connect_error）。
+#[cfg(test)]
+mod tests {
+    use crate::core::agent_client::map_agent_connect_error;
+
+    #[test]
+    fn connection_refused_gets_actionable_hint() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "os error 10061");
+        let e = map_agent_connect_error(anyhow::anyhow!(io_err), "127.0.0.1:3001");
+        let msg = e.to_string();
+        assert!(msg.contains("Agent not running"), "msg: {}", msg);
+        assert!(msg.contains("--install-agent"), "msg: {}", msg);
+    }
+
+    #[test]
+    fn other_agent_errors_pass_through() {
+        let e = map_agent_connect_error(anyhow::anyhow!("Agent error: CLI scan failed"), "127.0.0.1:3001");
+        assert_eq!(e.to_string(), "Agent error: CLI scan failed");
+    }
 }
 
 async fn validate_cli_path(cli_path: &str) -> anyhow::Result<()> {

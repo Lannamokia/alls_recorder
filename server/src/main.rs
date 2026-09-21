@@ -40,6 +40,14 @@ const SERVICE_NAME: &str = "AllsRecorder";
 define_windows_service!(ffi_service_main, service_main);
 
 fn main() -> anyhow::Result<()> {
+    // 会话内停止采集的辅助入口：`server.exe --stop-capture <pid>`
+    // 由 SessionLauncher 在用户会话里拉起——控制台是会话内对象，
+    // Session 0 的服务 attach 不到会话 1 里采集进程的控制台。
+    #[cfg(windows)]
+    if let Some(pid) = stop_capture_pid() {
+        return crate::core::session_launch::send_ctrl_break(pid);
+    }
+
     // 处理 Agent 模式
     if std::env::args().any(|arg| arg == "--agent") {
         #[cfg(windows)]
@@ -125,6 +133,14 @@ fn main() -> anyhow::Result<()> {
 fn is_service_mode() -> bool {
     std::env::args().any(|arg| arg == "--service")
         || std::env::var("RUN_AS_SERVICE").map(|v| v == "1").unwrap_or(false)
+}
+
+/// 解析 `--stop-capture <pid>`（会话内 helper 的入口参数）。
+#[cfg(windows)]
+fn stop_capture_pid() -> Option<u32> {
+    let args: Vec<String> = std::env::args().collect();
+    let idx = args.iter().position(|a| a == "--stop-capture")?;
+    args.get(idx + 1)?.parse().ok()
 }
 
 fn init_tracing() {

@@ -27,6 +27,10 @@ impl AgentClient {
         Self { agent_addr }
     }
 
+    pub fn addr(&self) -> &str {
+        &self.agent_addr
+    }
+
     pub async fn send_command(&self, cmd: AgentCommand) -> Result<AgentResponse> {
         let mut stream = TcpStream::connect(&self.agent_addr).await?;
         
@@ -77,5 +81,26 @@ impl AgentClient {
         } else {
             Err(anyhow::anyhow!("Agent error: {}", response.message))
         }
+    }
+}
+
+/// 将代理连接错误翻译为可操作的提示。连接拒绝（os 10061）说明代理进程没跑，
+/// 这是部署问题而非程序错误，直接告诉用户怎么修。
+pub fn map_agent_connect_error(e: anyhow::Error, agent_addr: &str) -> anyhow::Error {
+    let refused = e.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
+            .unwrap_or(false)
+    });
+    if refused {
+        anyhow::anyhow!(
+            "Agent not running: 无法连接采集代理 {}（连接被拒绝）。\
+             请以管理员身份运行 server.exe --install-agent 安装代理计划任务，\
+             并确认用户登录后代理进程（server.exe --agent）正在运行。",
+            agent_addr
+        )
+    } else {
+        e
     }
 }
